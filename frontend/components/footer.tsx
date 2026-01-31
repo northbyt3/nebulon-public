@@ -31,7 +31,7 @@ const footerLinks = {
 
 const socialLinks = [
   { icon: Twitter, href: "#", label: "Twitter" },
-  { icon: Github, href: "#", label: "GitHub" },
+  { icon: Github, href: "https://github.com/northbyt3/nebulon-public", label: "GitHub" },
   { icon: MessageCircle, href: "#", label: "Discord" },
 ];
 

@@ -14,25 +14,40 @@ const _geist = Geist({ subsets: ["latin"] });
 const _geistMono = Geist_Mono({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: 'Nebulon - Private Escrow for Web3 Deals',
-  description: 'A Solana escrow protocol with milestone approvals, dispute resolution, and private deal details using MagicBlock PER. Never get scammed again.',
-  generator: 'v0.app',
-  icons: {
-    icon: [
+  title: {
+    default: 'Nebulon - Private Escrow for Web3 Deals',
+    template: '%s | Nebulon',
+  },
+  description:
+    'Nebulon is a private, milestone-based escrow on Solana with on-chain enforcement, dispute resolution, and optional TEE privacy for deal terms.',
+  metadataBase: new URL('https://nebulon-five.vercel.app'),
+  openGraph: {
+    type: 'website',
+    url: 'https://nebulon-five.vercel.app',
+    siteName: 'Nebulon',
+    title: 'Nebulon - Private Escrow for Web3 Deals',
+    description:
+      'Nebulon is a private, milestone-based escrow on Solana with on-chain enforcement, dispute resolution, and optional TEE privacy for deal terms.',
+    images: [
       {
-        url: '/icon-light-32x32.png',
-        media: '(prefers-color-scheme: light)',
-      },
-      {
-        url: '/icon-dark-32x32.png',
-        media: '(prefers-color-scheme: dark)',
-      },
-      {
-        url: '/icon.svg',
-        type: 'image/svg+xml',
+        url: '/og-image.png',
+        width: 1200,
+        height: 630,
+        alt: 'Nebulon',
       },
     ],
-    apple: '/apple-icon.png',
+  },
+  twitter: {
+    card: 'summary_large_image',
+    title: 'Nebulon - Private Escrow for Web3 Deals',
+    description:
+      'Nebulon is a private, milestone-based escrow on Solana with on-chain enforcement, dispute resolution, and optional TEE privacy for deal terms.',
+    images: ['/og-image.png'],
+  },
+  icons: {
+    icon: '/favicon.svg',
+    shortcut: '/favicon.svg',
+    apple: '/favicon.svg',
   },
 }
 
