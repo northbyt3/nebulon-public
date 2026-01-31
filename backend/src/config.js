@@ -11,7 +11,7 @@ const DATABASE_URL = envDb
   : defaultDb;
 const JWT_SECRET = process.env.JWT_SECRET || "dev-secret-change";
 const JWT_TTL = process.env.JWT_TTL || "7d";
-const BASE_URL = process.env.BASE_URL || "http://localhost:3000";
+const BASE_URL = process.env.BASE_URL || "http://174.138.42.117:3000";
 const SOLANA_RPC_URL =
   process.env.SOLANA_RPC_URL ||
   process.env.ANCHOR_PROVIDER_URL ||
