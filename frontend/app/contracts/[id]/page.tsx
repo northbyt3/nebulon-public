@@ -35,7 +35,7 @@ import { toast } from '@/hooks/use-toast';
 import { importContractKeypair, loadContractKeys } from '@/lib/privacy-keys';
 import { buildPrivacyContext, decryptPayload, deriveContractKey, encryptPayload, isEncryptedPayload } from '@/lib/privacy-crypto';
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3333';
+const API_URL = process.env.NEXT_PUBLIC_API_URL || '/api';
 const PROGRAM_ID_FALLBACK = '6UqkmQ2iCkf3acBB71DdXtVd49EyuaftMz8V3E74USbC';
 const FEE_RECEIVER = new PublicKey('w8sdYr2sM1dfyD7vsTt6EXcQWQ1mfNWfQJMzQNNnUXq');
 const LOCAL_VALIDATOR_IDENTITY = new PublicKey('mAGicPQYBMvcYveUZA5F5UNNwyHvfYh5xkLS2Fr1mev');

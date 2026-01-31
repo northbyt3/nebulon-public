@@ -71,7 +71,7 @@ export default function PublicProfilePage() {
         return;
       }
 
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3333'}/v1/auth/me`, {
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || '/api'}/v1/auth/me`, {
         headers: {
           Authorization: `Bearer ${token}`,
         },
@@ -101,7 +101,7 @@ export default function PublicProfilePage() {
         return;
       }
 
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3333'}/v1/contracts`, {
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || '/api'}/v1/contracts`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (response.ok) {
@@ -118,7 +118,7 @@ export default function PublicProfilePage() {
   const fetchPublicStats = async (handle: string) => {
     try {
       const response = await fetch(
-        `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3333'}/v1/auth/profile/handle/${encodeURIComponent(handle)}`
+        `${process.env.NEXT_PUBLIC_API_URL || '/api'}/v1/auth/profile/handle/${encodeURIComponent(handle)}`
       );
       if (response.ok) {
         const data = await response.json();

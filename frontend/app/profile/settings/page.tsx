@@ -152,7 +152,7 @@ export default function ProfileSettingsPage() {
         return;
       }
 
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3333'}/v1/auth/me`, {
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || '/api'}/v1/auth/me`, {
         headers: {
           Authorization: `Bearer ${token}`,
         },
@@ -185,7 +185,7 @@ export default function ProfileSettingsPage() {
         router.push('/login');
         return;
       }
-      const apiBase = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3333').trim();
+      const apiBase = (process.env.NEXT_PUBLIC_API_URL || '/api').trim();
       const url = `${apiBase}/v1/auth/profile/cooldown`;
       console.log('🔒 Fetching profile cooldown from:', url);
       const response = await fetch(url, {
@@ -264,7 +264,7 @@ export default function ProfileSettingsPage() {
     setCheckingId(true);
     try {
       const response = await fetch(
-        `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3333'}/v1/ids/check?handle=${encodeURIComponent(trimmedId)}`
+        `${process.env.NEXT_PUBLIC_API_URL || '/api'}/v1/ids/check?handle=${encodeURIComponent(trimmedId)}`
       );
       const { available, reason } = await response.json();
       setIdValidation({
@@ -346,7 +346,7 @@ export default function ProfileSettingsPage() {
 
     try {
       setSaving(true);
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3333'}/v1/auth/handle`, {
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || '/api'}/v1/auth/handle`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

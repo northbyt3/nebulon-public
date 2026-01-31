@@ -75,7 +75,7 @@ export default function NewContractPage() {
       try {
         const token = localStorage.getItem('authToken');
         if (!token) return;
-        const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3333'}/v1/auth/me`, {
+        const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || '/api'}/v1/auth/me`, {
           headers: {
             'Authorization': `Bearer ${token}`,
           },
@@ -198,7 +198,7 @@ export default function NewContractPage() {
     }
     try {
       setCheckingCounterparty(true);
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3333'}/v1/ids/check?handle=${encodeURIComponent(value)}`);
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || '/api'}/v1/ids/check?handle=${encodeURIComponent(value)}`);
       if (response.ok) {
         const data = await response.json();
         const exists = data && data.available === false && data.reason === 'taken';
@@ -278,7 +278,7 @@ export default function NewContractPage() {
         contractData.inviteeHandle = formData.counterpartyId.trim();
       }
 
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3333'}/v1/invites`, {
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || '/api'}/v1/invites`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -303,7 +303,7 @@ export default function NewContractPage() {
         }
         try {
           const { entry, created } = ensureContractKeypair(result.contractId);
-          const keyResponse = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3333'}/v1/contracts/${result.contractId}/keys`, {
+          const keyResponse = await fetch(`${process.env.NEXT_PUBLIC_API_URL || '/api'}/v1/contracts/${result.contractId}/keys`, {
             method: 'POST',
             headers: {
               'Authorization': `Bearer ${token}`,

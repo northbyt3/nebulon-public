@@ -66,7 +66,7 @@ export default function LocalnetTxVerifier() {
     setLoadingConfig(true)
     const loadConfig = async () => {
       try {
-        const base = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3333'
+        const base = process.env.NEXT_PUBLIC_API_URL || '/api'
         const response = await fetch(`${base}/v1/config`)
         if (!response.ok) return
         const config: BackendConfig = await response.json()

@@ -65,7 +65,7 @@ export default function LoginPage() {
   const validateExistingToken = async (token: string) => {
     try {
       console.log('🔐 Validating existing token with backend...');
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3333'}/v1/auth/me`, {
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || '/api'}/v1/auth/me`, {
         headers: {
           'Authorization': `Bearer ${token}`,
         },
@@ -108,7 +108,7 @@ export default function LoginPage() {
     try {
       console.log('📡 Checking if user exists in database...');
       // Try to get user profile - if it fails, user doesn't exist
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3333'}/v1/auth/profile/${publicKey.toString()}`);
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || '/api'}/v1/auth/profile/${publicKey.toString()}`);
 
       console.log('📥 User existence check response status:', response.status);
 
@@ -192,7 +192,7 @@ export default function LoginPage() {
     // If locally valid, check with server
     setCheckingId(true);
     try {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3333'}/v1/ids/check?handle=${encodeURIComponent(trimmedId)}`);
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || '/api'}/v1/ids/check?handle=${encodeURIComponent(trimmedId)}`);
       const { available, reason } = await response.json();
 
       setIdValidation({
@@ -256,7 +256,7 @@ export default function LoginPage() {
           setShowVerification(true);
           return;
         }
-        const updateResponse = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3333'}/v1/auth/handle`, {
+        const updateResponse = await fetch(`${process.env.NEXT_PUBLIC_API_URL || '/api'}/v1/auth/handle`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -306,7 +306,7 @@ export default function LoginPage() {
       console.log('Getting challenge for wallet:', publicKey.toString());
 
       // Get challenge from backend
-      const challengeResponse = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3333'}/v1/auth/challenge`, {
+      const challengeResponse = await fetch(`${process.env.NEXT_PUBLIC_API_URL || '/api'}/v1/auth/challenge`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -359,7 +359,7 @@ export default function LoginPage() {
         nebulonId: nebulonId.trim() || null,
       });
 
-      const verifyResponse = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3333'}/v1/auth/verify`, {
+      const verifyResponse = await fetch(`${process.env.NEXT_PUBLIC_API_URL || '/api'}/v1/auth/verify`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

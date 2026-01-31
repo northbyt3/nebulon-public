@@ -81,7 +81,7 @@ export default function PublicProfileHandlePage() {
         return;
       }
 
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3333'}/v1/auth/me`, {
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || '/api'}/v1/auth/me`, {
         headers: {
           Authorization: `Bearer ${token}`,
         },
@@ -111,7 +111,7 @@ export default function PublicProfileHandlePage() {
 
     try {
       const response = await fetch(
-        `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3333'}/v1/auth/profile/handle/${encodeURIComponent(handleParam)}`
+        `${process.env.NEXT_PUBLIC_API_URL || '/api'}/v1/auth/profile/handle/${encodeURIComponent(handleParam)}`
       );
 
       if (response.ok) {

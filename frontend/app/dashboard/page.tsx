@@ -164,7 +164,7 @@ export default function DashboardPage() {
         return;
       }
 
-      const contractsResponse = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3333'}/v1/contracts`, {
+      const contractsResponse = await fetch(`${process.env.NEXT_PUBLIC_API_URL || '/api'}/v1/contracts`, {
         headers: { 'Authorization': `Bearer ${token}` },
       });
 
@@ -185,7 +185,7 @@ export default function DashboardPage() {
       if (!token) {
         return;
       }
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3333'}/v1/invites`, {
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || '/api'}/v1/invites`, {
         headers: { 'Authorization': `Bearer ${token}` },
       });
       if (response.ok) {
@@ -201,7 +201,7 @@ export default function DashboardPage() {
 
   const fetchBackendConfig = async () => {
     try {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3333'}/v1/config`);
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || '/api'}/v1/config`);
       if (!response.ok) {
         return;
       }
@@ -314,7 +314,7 @@ export default function DashboardPage() {
     }
     try {
       const keyResponse = await fetch(
-        `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3333'}/v1/contracts/${contract.id}/keys`,
+        `${process.env.NEXT_PUBLIC_API_URL || '/api'}/v1/contracts/${contract.id}/keys`,
         {
           headers: { 'Authorization': `Bearer ${token}` },
         }
@@ -423,7 +423,7 @@ export default function DashboardPage() {
   const handleAcceptInvite = async (inviteId: string) => {
     try {
       const token = localStorage.getItem('authToken');
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3333'}/v1/invites/accept-id`, {
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || '/api'}/v1/invites/accept-id`, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${token}`,
@@ -436,7 +436,7 @@ export default function DashboardPage() {
         const contractId = data.contractId;
         try {
           const { entry } = ensureContractKeypair(contractId);
-          const keyResponse = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3333'}/v1/contracts/${contractId}/keys`, {
+          const keyResponse = await fetch(`${process.env.NEXT_PUBLIC_API_URL || '/api'}/v1/contracts/${contractId}/keys`, {
             method: 'POST',
             headers: {
               'Authorization': `Bearer ${token}`,
@@ -475,7 +475,7 @@ export default function DashboardPage() {
   const handleDeclineInvite = async (inviteId: string) => {
     try {
       const token = localStorage.getItem('authToken');
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3333'}/v1/invites/decline`, {
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || '/api'}/v1/invites/decline`, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${token}`,
@@ -593,7 +593,7 @@ export default function DashboardPage() {
   const handleCancelInvite = async (inviteId: string) => {
     try {
       const token = localStorage.getItem('authToken');
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3333'}/v1/invites/${inviteId}/cancel`, {
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || '/api'}/v1/invites/${inviteId}/cancel`, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${token}`,

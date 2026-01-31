@@ -19,7 +19,7 @@ import {
 } from '@magicblock-labs/ephemeral-rollups-sdk';
 import idl from '@/lib/nebulon-idl.json';
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3333';
+const API_URL = process.env.NEXT_PUBLIC_API_URL || '/api';
 
 const TEE_PRESETS = [
   { key: 'config', label: 'From backend config', rpc: '', ws: '' },

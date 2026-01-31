@@ -61,7 +61,7 @@ export default function AppNavbar({
   useEffect(() => {
     const loadConfig = async () => {
       try {
-        const base = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3333';
+        const base = process.env.NEXT_PUBLIC_API_URL || '/api';
         const response = await fetch(`${base}/v1/config`);
         if (!response.ok) return;
         const data = (await response.json()) as BackendConfig;

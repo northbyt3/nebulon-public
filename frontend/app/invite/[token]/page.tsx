@@ -39,7 +39,7 @@ export default function InviteTokenPage() {
   const [pendingRedirect, setPendingRedirect] = useState<string | null>(null);
 
   const apiBase = useMemo(
-    () => process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3333',
+    () => process.env.NEXT_PUBLIC_API_URL || '/api',
     []
   );
 

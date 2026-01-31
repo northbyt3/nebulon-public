@@ -59,7 +59,7 @@ export default function InvitesPage() {
       try {
         const token = localStorage.getItem('authToken');
         if (!token) return;
-        const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3333'}/v1/auth/me`, {
+        const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || '/api'}/v1/auth/me`, {
           headers: {
             'Authorization': `Bearer ${token}`,
           },
@@ -141,7 +141,7 @@ export default function InvitesPage() {
   const fetchInvites = async () => {
     try {
       const token = localStorage.getItem('authToken');
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3333'}/v1/invites`, {
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || '/api'}/v1/invites`, {
         headers: {
           'Authorization': `Bearer ${token}`,
         },
@@ -163,7 +163,7 @@ export default function InvitesPage() {
     setActionLoading(inviteId);
     try {
       const token = localStorage.getItem('authToken');
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3333'}/v1/invites/accept-id`, {
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || '/api'}/v1/invites/accept-id`, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${token}`,
@@ -183,7 +183,7 @@ export default function InvitesPage() {
 
         try {
           const { entry, created } = ensureContractKeypair(contractId);
-          const keyResponse = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3333'}/v1/contracts/${contractId}/keys`, {
+          const keyResponse = await fetch(`${process.env.NEXT_PUBLIC_API_URL || '/api'}/v1/contracts/${contractId}/keys`, {
             method: 'POST',
             headers: {
               'Authorization': `Bearer ${token}`,
@@ -196,7 +196,7 @@ export default function InvitesPage() {
             throw new Error(errorData.error || 'Failed to register privacy key');
           }
 
-          const keysResponse = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3333'}/v1/contracts/${contractId}/keys`, {
+          const keysResponse = await fetch(`${process.env.NEXT_PUBLIC_API_URL || '/api'}/v1/contracts/${contractId}/keys`, {
             headers: {
               'Authorization': `Bearer ${token}`,
             },
@@ -257,7 +257,7 @@ export default function InvitesPage() {
     setActionLoading(inviteId);
     try {
       const token = localStorage.getItem('authToken');
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3333'}/v1/invites/decline`, {
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || '/api'}/v1/invites/decline`, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${token}`,
