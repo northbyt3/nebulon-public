@@ -1,0 +1,77 @@
+# Dependencies
+**/node_modules/
+**/.yarn/
+
+# Build artifacts
+**/target/
+!**/target/idl/
+!**/target/deploy/*.json
+**/.anchor/
+**/.bolt/
+**/build/
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+*.DS_Store
+
+# Environment files
+**/.env
+**/.env.local
+**/.env.*.local
+!backend/.env
+
+# Logs
+**/*.log
+**/logs/
+
+# Next.js
+**/.next/
+**/out/
+**/.vercel/
+
+# Test artifacts
+**/test-ledger*
+**/tests-kit/
+
+# Rust backup files
+**/*.rs.bk
+
+# OS files
+Thumbs.db
+.DS_Store
+
+# Backend data
+backend/data/
+backend/*.db
+
+# MagicBlock test storage (large database files)
+magicblock-test-storage/
+**/*.log
+
+# Old frontend archives (large files)
+frontend-old/
+
+# Additional build and cache directories
+**/.cache/
+**/.parcel-cache/
+**/dist/
+**/build/
+**/.nuxt/
+**/.vuepress/dist/
+
+# Database files (SQLite, etc.)
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+
+# Test storage and large data files
+test-ledger*/
+**/*-test-storage/
+**/ephemeral-validator-data/
+**/validator-ledger/

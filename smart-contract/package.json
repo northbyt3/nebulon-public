@@ -1,0 +1,30 @@
+{
+  "scripts": {
+    "test": "anchor test",
+    "lint": "prettier */*.js \"*/**/*{.js,.ts}\" --check",
+    "lint:fix": "prettier */*.js \"*/**/*{.js,.ts}\" -w",
+    "mint-tusdc": "node scripts/mint-usdc.js",
+    "sweep-sol": "node scripts/sweep-sol.js"
+  },
+  "dependencies": {
+    "@coral-xyz/anchor": "0.32.1",
+    "@magicblock-labs/ephemeral-rollups-sdk": "0.8.0",
+    "@magicblock-labs/gum-sdk": "^3.0.10",
+    "@solana/spl-token": "^0.4.12"
+  },
+  "devDependencies": {
+    "@types/bn.js": "^5.1.5",
+    "@types/chai": "^5.2.2",
+    "@types/mocha": "^10.0.10",
+    "bn.js": "^5.2.1",
+    "chai": "^5.2.0",
+    "mocha": "^11.2.2",
+    "prettier": "^3.5.3",
+    "tweetnacl": "^1.0.3",
+    "ts-mocha": "^11.1.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.8.3"
+  },
+  "license": "MIT"
+}
+

@@ -1,0 +1,26 @@
+{
+  "name": "nebulon-offchain",
+  "version": "0.1.0",
+  "private": true,
+  "main": "src/index.js",
+  "scripts": {
+    "auth": "node scripts/auth.js",
+    "dev": "node src/index.js",
+    "faucet:test": "node scripts/faucet-test.js",
+    "indexer": "node src/indexer.js",
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "@solana/web3.js": "^1.95.3",
+    "@solana/spl-token": "^0.4.12",
+    "better-sqlite3": "^9.4.3",
+    "bs58": "^5.0.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "express-rate-limit": "^7.3.0",
+    "helmet": "^7.1.0",
+    "jsonwebtoken": "^9.0.2",
+    "tweetnacl": "^1.0.3"
+  }
+}
