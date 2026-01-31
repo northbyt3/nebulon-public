@@ -26,7 +26,7 @@ const backendLabel = (config) => {
   if (config.backendSource) {
     return config.backendSource;
   }
-  if (config.backendUrl === "http://localhost:3333") {
+  if (config.backendUrl === "http://174.138.42.117:3333") {
     return "official";
   }
   return "custom";
@@ -286,7 +286,7 @@ const setConfigValue = async (config, key, value) => {
     }
     config.backendUrl = value;
     config.backendSource =
-      value === "http://localhost:3333" ? "official" : "custom";
+      value === "http://174.138.42.117:3333" ? "official" : "custom";
     await maybeRefreshFromBackend(config);
     return;
   }

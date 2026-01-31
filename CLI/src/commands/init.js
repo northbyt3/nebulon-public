@@ -140,7 +140,7 @@ const runInit = async (options = {}, capsuleName) => {
     let backendNetwork = null;
     let serverChoice = null;
     try {
-      await getConfig((config.backendUrl || "http://localhost:3333").trim());
+      await getConfig((config.backendUrl || "http://174.138.42.117:3333").trim());
       serverChoice = await prompt({
         type: "select",
         name: "server",
@@ -163,7 +163,7 @@ const runInit = async (options = {}, capsuleName) => {
       });
       backendSource = "custom";
     } else {
-      backendAnswer = { backendUrl: "http://localhost:3333" };
+      backendAnswer = { backendUrl: "http://174.138.42.117:3333" };
       backendSource = "official";
     }
 
