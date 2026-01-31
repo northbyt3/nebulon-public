@@ -19,7 +19,7 @@ export const metadata: Metadata = {
     template: '%s | Nebulon',
   },
   description:
-    'Nebulon is a private, milestone-based escrow on Solana with on-chain enforcement, dispute resolution, and optional TEE privacy for deal terms.',
+    'Nebulon is a private, milestone-based escrow on Solana with on-chain enforcement and dispute resolution, powered by MagicBlock.',
   metadataBase: new URL('https://nebulon-five.vercel.app'),
   openGraph: {
     type: 'website',
@@ -27,7 +27,7 @@ export const metadata: Metadata = {
     siteName: 'Nebulon',
     title: 'Nebulon - Private Escrow for Web3 Deals',
     description:
-      'Nebulon is a private, milestone-based escrow on Solana with on-chain enforcement, dispute resolution, and optional TEE privacy for deal terms.',
+      'Nebulon is a private, milestone-based escrow on Solana with on-chain enforcement and dispute resolution, powered by MagicBlock.',
     images: [
       {
         url: '/og-image.png',
@@ -41,7 +41,7 @@ export const metadata: Metadata = {
     card: 'summary_large_image',
     title: 'Nebulon - Private Escrow for Web3 Deals',
     description:
-      'Nebulon is a private, milestone-based escrow on Solana with on-chain enforcement, dispute resolution, and optional TEE privacy for deal terms.',
+      'Nebulon is a private, milestone-based escrow on Solana with on-chain enforcement and dispute resolution, powered by MagicBlock.',
     images: ['/og-image.png'],
   },
   icons: {
