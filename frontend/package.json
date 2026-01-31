@@ -46,6 +46,7 @@
     "@solana/web3.js": "^1.98.4",
     "@vercel/analytics": "1.3.1",
     "autoprefixer": "^10.4.20",
+    "bs58": "^6.0.0",
     "bn.js": "^5.2.2",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
