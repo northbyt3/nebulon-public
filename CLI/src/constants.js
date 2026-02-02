@@ -26,7 +26,7 @@ const DEFAULT_CONFIG = {
   rpcUrl: NETWORK_PRESETS.localnet.rpcUrl,
   wsUrl: NETWORK_PRESETS.localnet.wsUrl,
   programId: PROGRAM_ID_DEFAULT,
-  backendUrl: "http://174.138.42.117:3333",
+  backendUrl: "http://localhost:3333",
   usdcMint: NETWORK_PRESETS.localnet.usdcMint,
   programIdSource: "custom",
   usdcMintSource: "custom",

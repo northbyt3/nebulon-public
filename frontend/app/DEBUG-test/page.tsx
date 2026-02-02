@@ -16,16 +16,18 @@ import {
   AUTHORITY_FLAG,
   TX_LOGS_FLAG,
   getAuthToken,
+  ConnectionMagicRouter,
 } from '@magicblock-labs/ephemeral-rollups-sdk';
+import { SessionTokenManager } from '@magicblock-labs/gum-sdk';
+import bs58 from 'bs58';
 import idl from '@/lib/nebulon-idl.json';
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || '/api';
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3333';
 
 const TEE_PRESETS = [
   { key: 'config', label: 'From backend config', rpc: '', ws: '' },
   { key: 'tee', label: 'TEE (tee.magicblock.app)', rpc: 'https://tee.magicblock.app', ws: 'wss://tee.magicblock.app' },
-  { key: 'devnet-router', label: 'Devnet router (devnet-router.magicblock.app)', rpc: 'https://devnet-router.magicblock.app', ws: 'wss://devnet-router.magicblock.app' },
-  { key: 'devnet-as', label: 'Devnet AS (devnet-as.magicblock.app)', rpc: 'https://devnet-as.magicblock.app', ws: 'wss://devnet-as.magicblock.app' },
+  { key: 'devnet-er', label: 'Devnet ER (devnet.magicblock.app)', rpc: 'https://devnet.magicblock.app', ws: 'wss://devnet-router.magicblock.app' },
 ];
 
 const textToHash = (text: string) => {
@@ -130,11 +132,16 @@ export default function DebugTestPage() {
   const [contractId, setContractId] = useState('');
   const [deadlineInput, setDeadlineInput] = useState('7d');
   const [paymentInput, setPaymentInput] = useState('20');
-  const [encryptedTerms, setEncryptedTerms] = useState('');
   const [skipPrep, setSkipPrep] = useState(false);
   const [teePresetKey, setTeePresetKey] = useState('config');
   const [teeBaseInput, setTeeBaseInput] = useState('');
   const [teeWsInput, setTeeWsInput] = useState('');
+  const [useErDirect, setUseErDirect] = useState(false);
+  const [useSessionToken, setUseSessionToken] = useState(false);
+  const [txLookupSig, setTxLookupSig] = useState('');
+  const [txLookupRpc, setTxLookupRpc] = useState('');
+  const [txLookupStatus, setTxLookupStatus] = useState<'idle' | 'ok' | 'error' | 'pending'>('idle');
+  const [txLookupSummary, setTxLookupSummary] = useState('');
   const [running, setRunning] = useState(false);
   const [log, setLog] = useState<string[]>([]);
 
@@ -145,6 +152,212 @@ export default function DebugTestPage() {
   const pushLog = useCallback((message: string) => {
     setLog((prev) => [...prev, message]);
   }, []);
+
+  const handleErLookup = useCallback(async () => {
+    const sig = txLookupSig.trim();
+    if (!sig) {
+      pushLog('Paste a transaction signature to lookup.');
+      return;
+    }
+    let rpc = (txLookupRpc || '').trim();
+    if (!rpc) {
+      pushLog('Missing ER RPC for lookup.');
+      return;
+    }
+    setTxLookupStatus('pending');
+    setTxLookupSummary('');
+    try {
+      if (rpc.includes('devnet.magicblock.app')) {
+        const router = new ConnectionMagicRouter(rpc, {
+          wsEndpoint: txLookupRpc || undefined,
+        });
+        const closest = await router.getClosestValidator();
+        if (closest?.rpcEndpoint) {
+          rpc = String(closest.rpcEndpoint).replace(/\/$/, '');
+          pushLog(`ER lookup using router RPC: ${rpc}`);
+        }
+      }
+
+      const payload = {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'getTransaction',
+        params: [
+          sig,
+          { encoding: 'json', commitment: 'confirmed', maxSupportedTransactionVersion: 0 },
+        ],
+      };
+      const res = await fetch(rpc, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const text = await res.text();
+      pushLog(`ER lookup status: ${res.status}`);
+      pushLog(`ER lookup response: ${text.slice(0, 2000)}`);
+      let success = false;
+      try {
+        const parsed = JSON.parse(text);
+        const err = parsed?.result?.meta?.err ?? parsed?.error ?? null;
+        if (err) {
+          setTxLookupSummary(`Transaction failed: ${JSON.stringify(err)}`);
+        } else if (parsed?.result) {
+          success = true;
+          const slot = parsed.result.slot ?? 'n/a';
+          const logs = parsed.result.meta?.logMessages || [];
+          const headline = logs.find((line: string) => line.includes('Instruction:')) || 'Transaction succeeded';
+          setTxLookupSummary(`${headline} (slot ${slot})`);
+        } else {
+          setTxLookupSummary('No transaction result returned.');
+        }
+      } catch {
+        setTxLookupSummary('Unable to parse ER response.');
+      }
+      setTxLookupStatus(success ? 'ok' : 'error');
+      if (res.status === 404 || text.trim().startsWith('<!DOCTYPE html')) {
+        const fallback = {
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'getSignatureStatuses',
+          params: [[sig], { searchTransactionHistory: true }],
+        };
+        const fallbackRes = await fetch(rpc, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(fallback),
+        });
+        const fallbackText = await fallbackRes.text();
+        pushLog(`ER status lookup: ${fallbackRes.status}`);
+        pushLog(`ER status response: ${fallbackText.slice(0, 2000)}`);
+      }
+    } catch (err: any) {
+      pushLog(`ER lookup failed: ${err?.message || err}`);
+      setTxLookupStatus('error');
+      setTxLookupSummary(err?.message || 'ER lookup failed');
+    }
+  }, [pushLog, txLookupRpc, txLookupSig]);
+
+  const sendIxWithSigner = async (
+    connection: anchor.web3.Connection,
+    signer: anchor.web3.Keypair,
+    ix: anchor.web3.TransactionInstruction
+  ) => {
+    const latest = await connection.getLatestBlockhash();
+    const tx = new anchor.web3.Transaction({
+      feePayer: signer.publicKey,
+      recentBlockhash: latest.blockhash,
+    }).add(ix);
+    tx.sign(signer);
+    const sig = await connection.sendRawTransaction(tx.serialize());
+    await connection.confirmTransaction({ signature: sig, ...latest }, 'confirmed');
+    return sig;
+  };
+
+  const loadSessionSigner = (authority: string) => {
+    if (typeof window === 'undefined') return null;
+    const key = `nebulon_session_signer:${authority}`;
+    const raw = localStorage.getItem(key);
+    if (!raw) return null;
+    try {
+      const secret = bs58.decode(raw);
+      return anchor.web3.Keypair.fromSecretKey(secret);
+    } catch {
+      return null;
+    }
+  };
+
+  const saveSessionSigner = (authority: string, signer: anchor.web3.Keypair) => {
+    if (typeof window === 'undefined') return;
+    const key = `nebulon_session_signer:${authority}`;
+    localStorage.setItem(key, bs58.encode(signer.secretKey));
+  };
+
+  const deriveSessionTokenPda = (
+    sessionProgramId: anchor.web3.PublicKey,
+    programId: anchor.web3.PublicKey,
+    signer: anchor.web3.PublicKey,
+    authority: anchor.web3.PublicKey
+  ) =>
+    anchor.web3.PublicKey.findProgramAddressSync(
+      [
+        Buffer.from('session_token'),
+        programId.toBytes(),
+        signer.toBytes(),
+        authority.toBytes(),
+      ],
+      sessionProgramId
+    )[0];
+
+  const ensureSessionToken = async (config: any, programId: anchor.web3.PublicKey) => {
+    if (!anchorWallet || !wallet.publicKey) {
+      throw new Error('wallet_not_ready');
+    }
+    const connection = new anchor.web3.Connection(config.rpcUrl || 'http://localhost:8899', {
+      commitment: 'confirmed',
+      wsEndpoint: config.wsUrl || undefined,
+    });
+    const provider = new anchor.AnchorProvider(connection, anchorWallet, {
+      commitment: 'confirmed',
+    });
+    const sessionManager = new SessionTokenManager(provider.wallet, provider.connection);
+    const authority = anchorWallet.publicKey;
+    let sessionSigner = loadSessionSigner(authority.toBase58());
+    if (!sessionSigner) {
+      sessionSigner = anchor.web3.Keypair.generate();
+      saveSessionSigner(authority.toBase58(), sessionSigner);
+    }
+    const sessionProgramId = sessionManager.program.programId;
+    let sessionPda = deriveSessionTokenPda(
+      sessionProgramId,
+      programId,
+      sessionSigner.publicKey,
+      authority
+    );
+    const now = Math.floor(Date.now() / 1000);
+    let existing: any = null;
+    try {
+      existing = await sessionManager.get(sessionPda);
+    } catch {
+      existing = null;
+    }
+    const existingUntil = existing?.validUntil ?? existing?.valid_until ?? null;
+    if (existingUntil && Number(existingUntil) > now + 30) {
+      return { sessionSigner, sessionPda, created: false };
+    }
+    if (existing) {
+      try {
+        const revokeTx = await sessionManager.program.methods
+          .revokeSession()
+          .accounts({
+            sessionToken: sessionPda,
+            authority,
+            systemProgram: anchor.web3.SystemProgram.programId,
+          })
+          .transaction();
+        await provider.sendAndConfirm(revokeTx, []);
+      } catch {
+        sessionSigner = anchor.web3.Keypair.generate();
+        saveSessionSigner(authority.toBase58(), sessionSigner);
+        sessionPda = deriveSessionTokenPda(
+          sessionProgramId,
+          programId,
+          sessionSigner.publicKey,
+          authority
+        );
+      }
+    }
+    const validUntil = new anchor.BN(now + 3600);
+    const tx = await sessionManager.program.methods
+      .createSession(true, validUntil, new anchor.BN(0))
+      .accounts({
+        targetProgram: programId,
+        sessionSigner: sessionSigner.publicKey,
+        authority,
+      })
+      .transaction();
+    await provider.sendAndConfirm(tx, [sessionSigner]);
+    return { sessionSigner, sessionPda, created: true };
+  };
 
   const runDebug = useCallback(async () => {
     if (!wallet.publicKey || !anchorWallet) {
@@ -179,6 +392,8 @@ export default function DebugTestPage() {
       const rpcUrl = config.rpcUrl;
       const teeBase = (config.ephemeralTeeEndpoint || config.ephemeralPermissionEndpoint || 'https://tee.magicblock.app').replace(/\/$/, '');
       const teeWsBase = (config.ephemeralTeeWsEndpoint || 'wss://tee.magicblock.app').replace(/\/$/, '');
+      const erBase = (config.ephemeralProviderUrl || '').replace(/\/$/, '');
+      const erWsBase = (config.ephemeralWsUrl || '').replace(/\/$/, '');
       const preset = TEE_PRESETS.find((entry) => entry.key === teePresetKey) || TEE_PRESETS[0];
       const resolvedBase = (preset.key === 'config' ? teeBase : preset.rpc).replace(/\/$/, '');
       const resolvedWs = (preset.key === 'config' ? teeWsBase : preset.ws).replace(/\/$/, '');
@@ -188,12 +403,18 @@ export default function DebugTestPage() {
       if (!teeWsInput || teePresetKey === 'config') {
         setTeeWsInput(resolvedWs);
       }
-      const validator = config.ephemeralValidatorIdentity
+      let validator = config.ephemeralValidatorIdentity
         ? new PublicKey(config.ephemeralValidatorIdentity)
         : null;
 
       pushLog(`RPC: ${rpcUrl}`);
       pushLog(`TEE: ${teeBase}`);
+      if (erBase) {
+        pushLog(`ER RPC: ${erBase}`);
+      }
+      if (erWsBase) {
+        pushLog(`ER WS: ${erWsBase}`);
+      }
 
       pushLog('Fetching contract...');
       const contractRes = await fetch(`${API_URL}/v1/contracts/${contractId.trim()}`, {
@@ -253,6 +474,37 @@ export default function DebugTestPage() {
         programId
       );
 
+      let erTargetRpc = (config.ephemeralProviderUrl || '').replace(/\/$/, '');
+      let erTargetWs =
+        (config.ephemeralWsUrl || '').replace(/\/$/, '') ||
+        (erTargetRpc ? erTargetRpc.replace(/^https:/, 'wss:').replace(/^http:/, 'ws:') : '');
+
+      if (useErDirect && config.ephemeralProviderUrl) {
+        try {
+          const router = new ConnectionMagicRouter(config.ephemeralProviderUrl, {
+            wsEndpoint: config.ephemeralWsUrl || undefined,
+          });
+          const closest = await router.getClosestValidator();
+          if (closest) {
+            const details = JSON.stringify(closest);
+            pushLog(`Router closest: ${details}`);
+          }
+          const identity = closest?.validatorIdentity || closest?.identity;
+          if (identity) {
+            validator = new PublicKey(identity);
+            pushLog(`Router validator: ${validator.toBase58()}`);
+          }
+          if (closest?.rpcEndpoint) {
+            erTargetRpc = String(closest.rpcEndpoint).replace(/\/$/, '');
+          }
+          if (closest?.wsEndpoint) {
+            erTargetWs = String(closest.wsEndpoint).replace(/\/$/, '');
+          }
+        } catch (err: any) {
+          pushLog(`Router lookup failed: ${err?.message || err}`);
+        }
+      }
+
       if (!skipPrep) {
         pushLog('Preparing terms stub + permissions...');
         try {
@@ -293,6 +545,7 @@ export default function DebugTestPage() {
         }
 
         if (validator) {
+          pushLog(`Delegating to validator: ${validator.toBase58()}`);
           const permIx = createDelegatePermissionInstruction({
             payer: wallet.publicKey,
             validator,
@@ -347,19 +600,41 @@ export default function DebugTestPage() {
       const deadline = parseDeadline(deadlineInput);
       const payment = parseUsdc(paymentInput);
       const termsHash = buildTermsHash(deadline.toString(), payment.toString());
-      const encryptedBytes = new TextEncoder().encode(encryptedTerms || '');
+      const encryptedBytes = Buffer.alloc(0);
+      pushLog(`Encrypted terms bytes: ${encryptedBytes.length}`);
+      pushLog(`Terms hash bytes: ${termsHash.length}`);
 
-      pushLog('Requesting TEE token...');
       const teeBaseResolved = (teeBaseInput || teeBase).replace(/\/$/, '');
       const teeWsResolved = (teeWsInput || teeWsBase).replace(/\/$/, '');
-      const auth = await getAuthToken(
-        teeBaseResolved,
-        wallet.publicKey,
-        (message) => wallet.signMessage!(message)
-      );
-      const teeRpc = `${teeBaseResolved}?token=${auth.token}`;
-      const teeWs = `${teeWsResolved}?token=${auth.token}`;
-      pushLog(`TEE RPC: ${teeRpc}`);
+      let teeRpc = '';
+      let teeWs = '';
+      if (useErDirect) {
+        if (!erTargetRpc) {
+          throw new Error('Missing ER endpoint (ephemeralProviderUrl).');
+        }
+        teeRpc = erTargetRpc;
+        teeWs = erTargetWs;
+        pushLog(`ER RPC (direct): ${teeRpc}`);
+        if (!txLookupRpc) {
+          setTxLookupRpc(teeRpc);
+        }
+      } else {
+        pushLog('Requesting TEE token...');
+        const auth = await getAuthToken(
+          teeBaseResolved,
+          wallet.publicKey,
+          (message) => wallet.signMessage!(message)
+        );
+        const useProxy = API_URL.startsWith('http');
+        teeRpc = useProxy
+          ? `${API_URL}/v1/tee-proxy?token=${auth.token}`
+          : `${teeBaseResolved}?token=${auth.token}`;
+        teeWs = `${teeWsResolved}?token=${auth.token}`;
+        pushLog(`TEE RPC: ${teeRpc}`);
+        if (!txLookupRpc && erTargetRpc) {
+          setTxLookupRpc(erTargetRpc);
+        }
+      }
 
       const teeConnection = new anchor.web3.Connection(teeRpc, {
         commitment: 'confirmed',
@@ -370,44 +645,119 @@ export default function DebugTestPage() {
       });
       const teeProgram = new anchor.Program(idlData as anchor.Idl, teeProvider);
 
+      let sessionSigner: anchor.web3.Keypair | null = null;
+      let sessionPda: anchor.web3.PublicKey | null = null;
+      if (useSessionToken) {
+        pushLog('Preparing session token...');
+        const session = await ensureSessionToken(config, programId);
+        sessionSigner = session.sessionSigner;
+        sessionPda = session.sessionPda;
+        pushLog('Session token ready.');
+      }
+
+      if (!useErDirect) {
+        pushLog('TEE RPC: fetching recent blockhash...');
+        try {
+          const blockhash = await teeConnection.getLatestBlockhash('confirmed');
+          pushLog(`TEE blockhash ok: ${blockhash.blockhash}`);
+        } catch (err: any) {
+          pushLog(`TEE blockhash failed: ${err?.message || err}`);
+        }
+      }
+
       pushLog('Submitting createPrivateTerms...');
       let wsSubId: number | null = null;
-      try {
-        pushLog('TEE WS health check: subscribing for slot change...');
-        wsSubId = await ensureWsReady(teeConnection, pushLog);
-        pushLog('TEE WS health check: OK');
-      } catch (err: any) {
-        pushLog(`TEE WS health check failed: ${err?.message || err}`);
+      if (!useErDirect) {
+        try {
+          pushLog('TEE WS health check: subscribing for slot change...');
+          wsSubId = await ensureWsReady(teeConnection, pushLog);
+          pushLog('TEE WS health check: OK');
+        } catch (err: any) {
+          pushLog(`TEE WS health check failed: ${err?.message || err}`);
+        }
       }
-      const sig = await teeProgram.methods
-        .createPrivateTerms(
-          escrowId,
-          termsHash,
-          payment,
-          deadline,
-          Array.from(encryptedBytes)
-        )
-        .accounts({
-          user: wallet.publicKey,
-          payer: wallet.publicKey,
-          sessionToken: null,
-          escrow: escrowPda,
-          terms: termsPda,
-          perVault: perVaultPda,
-          systemProgram: anchor.web3.SystemProgram.programId,
-        })
-        .signers([])
-        .rpc({ skipPreflight: true });
+      let sig = '';
+      if (sessionSigner && sessionPda) {
+        const ix = await teeProgram.methods
+          .createPrivateTerms(
+            escrowId,
+            termsHash,
+            payment,
+            deadline,
+            encryptedBytes
+          )
+          .accounts({
+            user: wallet.publicKey,
+            payer: sessionSigner.publicKey,
+            sessionToken: sessionPda,
+            escrow: escrowPda,
+            terms: termsPda,
+            perVault: perVaultPda,
+            systemProgram: anchor.web3.SystemProgram.programId,
+          })
+          .instruction();
+        ix.keys = ix.keys.map((key) => {
+          if (key.pubkey.equals(escrowPda) || key.pubkey.equals(termsPda) || key.pubkey.equals(perVaultPda)) {
+            return { ...key, isWritable: true };
+          }
+          return key;
+        });
+        sig = await sendIxWithSigner(teeConnection, sessionSigner, ix);
+      } else {
+        sig = await teeProgram.methods
+          .createPrivateTerms(
+            escrowId,
+            termsHash,
+            payment,
+            deadline,
+            encryptedBytes
+          )
+          .accounts({
+            user: wallet.publicKey,
+            payer: wallet.publicKey,
+            sessionToken: null,
+            escrow: escrowPda,
+            terms: termsPda,
+            perVault: perVaultPda,
+            systemProgram: anchor.web3.SystemProgram.programId,
+          })
+          .signers([])
+          .rpc({ skipPreflight: true });
+      }
       pushLog(`Done. Tx: ${sig}`);
       if (wsSubId !== null) {
         await teeConnection.removeSlotChangeListener(wsSubId);
       }
     } catch (err: any) {
-      pushLog(`Error: ${err?.message || err}`);
+      const safeStringify = (value: any) => {
+        try {
+          return JSON.stringify(
+            value,
+            (key, val) => (typeof val === 'bigint' ? val.toString() : val),
+            2
+          );
+        } catch {
+          return null;
+        }
+      };
+      const summary = {
+        type: typeof err,
+        message: err?.message,
+        name: err?.name,
+        code: err?.code,
+        logs: err?.logs,
+        data: err?.data,
+        instructionError: err?.InstructionError,
+        stack: err?.stack,
+        keys: err && typeof err === 'object' ? Object.keys(err) : [],
+        string: err ? String(err) : '',
+      };
+      const details = safeStringify(summary) || String(err);
+      pushLog(`Error: ${details}`);
     } finally {
       setRunning(false);
     }
-  }, [anchorWallet, contractId, deadlineInput, encryptedTerms, paymentInput, pushLog, skipPrep, wallet]);
+  }, [anchorWallet, contractId, deadlineInput, paymentInput, pushLog, skipPrep, txLookupRpc, useErDirect, useSessionToken, wallet]);
 
   return (
     <div className="min-h-screen bg-[radial-gradient(circle_at_top,_#0c1d2f,_#05070d_60%)] text-slate-100">
@@ -459,16 +809,6 @@ export default function DebugTestPage() {
                 </label>
               </div>
               <label className="text-sm text-slate-300">
-                Encrypted terms (optional)
-                <textarea
-                  value={encryptedTerms}
-                  onChange={(e) => setEncryptedTerms(e.target.value)}
-                  className="mt-2 w-full rounded-lg border border-slate-800 bg-slate-900 px-3 py-2 text-sm"
-                  rows={3}
-                  placeholder="Leave empty to send blank encrypted payload"
-                />
-              </label>
-              <label className="text-sm text-slate-300">
                 TEE endpoint preset
                 <select
                   value={teePresetKey}
@@ -501,6 +841,62 @@ export default function DebugTestPage() {
                 />
                 Skip L1 preparation (assume delegated already)
               </label>
+              <label className="flex items-center gap-3 text-sm text-slate-300">
+                <input
+                  type="checkbox"
+                  checked={useErDirect}
+                  onChange={(e) => setUseErDirect(e.target.checked)}
+                  className="h-4 w-4 rounded border-slate-700 bg-slate-900"
+                />
+                Use ER RPC directly (localnet-style)
+              </label>
+              <label className="flex items-center gap-3 text-sm text-slate-300">
+                <input
+                  type="checkbox"
+                  checked={useSessionToken}
+                  onChange={(e) => setUseSessionToken(e.target.checked)}
+                  className="h-4 w-4 rounded border-slate-700 bg-slate-900"
+                />
+                Use Session Token (Gum)
+              </label>
+              <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-4">
+                <p className="text-xs uppercase tracking-[0.2em] text-slate-400">ER Tx Lookup</p>
+                <div className="mt-3 grid gap-3">
+                  <input
+                    value={txLookupSig}
+                    onChange={(e) => setTxLookupSig(e.target.value)}
+                    className="w-full rounded-lg border border-slate-800 bg-slate-900 px-3 py-2 text-sm"
+                    placeholder="Paste ER transaction signature"
+                  />
+                  <input
+                    value={txLookupRpc}
+                    onChange={(e) => setTxLookupRpc(e.target.value)}
+                    className="w-full rounded-lg border border-slate-800 bg-slate-900 px-3 py-2 text-sm"
+                    placeholder="ER RPC (auto-filled from config)"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleErLookup}
+                    disabled={txLookupStatus === 'pending'}
+                    className="w-full rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-sm font-semibold text-emerald-200 hover:bg-emerald-500/20"
+                  >
+                    {txLookupStatus === 'pending' ? 'Looking up...' : 'Lookup ER Transaction'}
+                  </button>
+                  {txLookupStatus !== 'idle' && (
+                    <div
+                      className={`rounded-lg border px-3 py-2 text-xs ${
+                        txLookupStatus === 'ok'
+                          ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200'
+                          : txLookupStatus === 'pending'
+                            ? 'border-amber-500/40 bg-amber-500/10 text-amber-200'
+                            : 'border-red-500/40 bg-red-500/10 text-red-200'
+                      }`}
+                    >
+                      {txLookupSummary || (txLookupStatus === 'pending' ? 'Checking ER...' : 'Lookup complete')}
+                    </div>
+                  )}
+                </div>
+              </div>
             </div>
             <button
               onClick={runDebug}

@@ -32,7 +32,7 @@ import { SessionTokenManager } from '@magicblock-labs/gum-sdk';
 import bs58 from 'bs58';
 import idl from '@/lib/nebulon-idl.json';
 import { toast } from '@/hooks/use-toast';
-import { importContractKeypair, loadContractKeys } from '@/lib/privacy-keys';
+import { ensureContractKeypair, importContractKeypair, loadContractKeys } from '@/lib/privacy-keys';
 import { buildPrivacyContext, decryptPayload, deriveContractKey, encryptPayload, isEncryptedPayload } from '@/lib/privacy-crypto';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || '/api';
@@ -368,7 +368,7 @@ export default function ContractDetailsPage({ params }: { params: { id: string }
       normalizedBackendRpc !== normalizedWalletRpc
   );
   const canSelectL1 = true;
-  const perDisabled = isDevnet && teeStatus === 'unavailable';
+  const perDisabled = false;
   const deadlineOptions = [1, 3, 7, 14, 30, 60, 120];
   const hasDeadlineValue =
     terms?.deadline !== null &&
@@ -1313,13 +1313,15 @@ export default function ContractDetailsPage({ params }: { params: { id: string }
     const network = (config?.network || '').toLowerCase();
     const localnet = network === 'localnet';
     const devnet = network === 'devnet';
+    const currentMode =
+      (contract?.execution_mode || executionMode || 'per').toLowerCase() === 'l1' ? 'l1' : 'per';
 
     if (localnet) {
       setExecutionMode('per');
       return 'per';
     }
 
-    if (executionMode === 'l1' || contract?.execution_mode === 'l1') {
+    if (currentMode === 'l1') {
       setExecutionMode('l1');
       return 'l1';
     }
@@ -1330,8 +1332,8 @@ export default function ContractDetailsPage({ params }: { params: { id: string }
         return 'per';
       }
       if (teeStatus === 'unavailable') {
-        await updateExecutionMode('l1');
-        return 'l1';
+        setExecutionMode(currentMode);
+        return currentMode;
       }
       const teeCheck = await checkTEEAvailability();
       if (teeCheck.ok) {
@@ -1339,8 +1341,8 @@ export default function ContractDetailsPage({ params }: { params: { id: string }
         return 'per';
       }
       setTeeStatus('unavailable');
-      await updateExecutionMode('l1');
-      return 'l1';
+      setExecutionMode(currentMode);
+      return currentMode;
     }
 
     return executionMode;
@@ -1609,13 +1611,20 @@ export default function ContractDetailsPage({ params }: { params: { id: string }
   };
 
   const getContractPrivacyKey = async (id: string) => {
-    const localKeys = loadContractKeys();
-    const entry = localKeys[id];
+    const { entry } = ensureContractKeypair(id);
     if (!entry?.secretKey) {
       throw new Error('privacy_key_missing');
     }
     const token = localStorage.getItem('authToken');
     if (!token || !publicKey) {
+      if (isLocalnet || network === 'devnet') {
+        toast({
+          title: 'Using local privacy key',
+          description: 'Auth missing; using a local-only privacy key for testing.',
+          variant: 'warning',
+        });
+        return deriveContractKey(entry.secretKey, entry.publicKey, id);
+      }
       throw new Error('auth_missing');
     }
     const keyResponse = await fetch(`${API_URL}/v1/contracts/${id}/keys`, {
@@ -1624,12 +1633,28 @@ export default function ContractDetailsPage({ params }: { params: { id: string }
       },
     });
     if (!keyResponse.ok) {
+      if (isLocalnet || network === 'devnet') {
+        toast({
+          title: 'Using local privacy key',
+          description: 'Backend keys unavailable; using a local-only privacy key for testing.',
+          variant: 'warning',
+        });
+        return deriveContractKey(entry.secretKey, entry.publicKey, id);
+      }
       throw new Error('keys_unavailable');
     }
     const keyData = await keyResponse.json();
     const keys = Array.isArray(keyData.keys) ? keyData.keys : [];
     const peer = keys.find((key) => key.wallet !== publicKey.toString());
     if (!peer?.public_key) {
+      if (isLocalnet || network === 'devnet') {
+        toast({
+          title: 'Using local privacy key',
+          description: 'Peer key missing; using a local-only privacy key for testing.',
+          variant: 'warning',
+        });
+        return deriveContractKey(entry.secretKey, entry.publicKey, id);
+      }
       throw new Error('peer_key_missing');
     }
     return deriveContractKey(entry.secretKey, peer.public_key, id);
@@ -4827,7 +4852,7 @@ export default function ContractDetailsPage({ params }: { params: { id: string }
                   <div className="text-xs text-amber-300">
                     {executionMode === 'l1'
                       ? 'MagicBlock TEE is currently unavailable. L1 mode is enabled (public, but always works on-chain). Browser performance can be very slow; CLI usage is recommended.'
-                      : 'MagicBlock PER (TEE) is not accessible right now. PER mode is disabled; use L1. Browser performance can be very slow, so CLI usage is recommended.'}
+                      : 'MagicBlock PER (TEE) is not accessible right now. PER actions may fail; L1 is safer. Browser performance can be very slow, so CLI usage is recommended.'}
                   </div>
                 )}
               </div>

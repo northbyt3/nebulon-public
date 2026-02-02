@@ -135,6 +135,7 @@ const inviteRoutes = require("./routes/invites");
 const contractRoutes = require("./routes/contracts");
 const adminRoutes = require("./routes/admin");
 const faucetRoutes = require("./routes/faucet");
+const teeProxyRoutes = require("./routes/tee-proxy");
 const { startIndexer } = require("./indexer");
 
 const app = express();
@@ -161,6 +162,7 @@ app.use("/v1/invites", inviteRoutes);
 app.use("/v1/contracts", contractRoutes);
 app.use("/v1/admin", adminRoutes);
 app.use("/v1/faucet", faucetRoutes);
+app.use("/v1/tee-proxy", teeProxyRoutes);
 
 app.use((err, req, res, next) => {
   console.error('Global error handler:', err);
