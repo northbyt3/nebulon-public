@@ -454,30 +454,6 @@ const ensureEscrowUndelegated = async (config, keypair, escrowPda) => {
     .rpc({ skipPreflight: true });
 };
 
-const ensureEscrowOwnedByProgramL1 = async (config, keypair, escrowPda) => {
-  const { connection, programId } = getProgram(config, keypair);
-  const info = await connection.getAccountInfo(escrowPda, "confirmed");
-  if (!info || !info.owner) {
-    console.error("Escrow not found on-chain.");
-    return false;
-  }
-  if (info.owner.equals(DELEGATION_PROGRAM_ID)) {
-    console.error(
-      "Escrow is delegated to MagicBlock (PER). L1 MODE cannot modify it while delegated."
-    );
-    console.error(
-      "Switch back to PER mode or wait for TEE availability and run `nebulon contract <id> sync` to undelegate."
-    );
-    return false;
-  }
-  if (!info.owner.equals(programId)) {
-    console.error("Escrow is owned by an unexpected program.");
-    console.error(`Owner: ${info.owner.toBase58()}`);
-    return false;
-  }
-  return true;
-};
-
 const buildPrivacyContext = (scope, contractId, index) => {
   const tail = index === undefined ? "" : `:${index}`;
   return `nebulon:${scope}:v1:${contractId}${tail}`;
@@ -748,52 +724,19 @@ const parsePublicKey = (value, label) => {
   }
 };
 
-const getExecutionMode = (contract) => {
-  const mode = (contract?.execution_mode || contract?.executionMode || "per")
-    .toString()
-    .toLowerCase();
-  return mode === "l1" ? "l1" : "per";
-};
-
-const isL1Mode = (contract) => getExecutionMode(contract) === "l1";
-
-const ensureExecutionMode = async (config, contract, keypair, options = {}) => {
-  if (isL1Mode(contract)) {
-    config.__l1_mode = true;
-    return "l1";
-  }
-  config.__l1_mode = false;
+const ensureExecutionMode = async (config, _contract, keypair, _options = {}) => {
   if (isLocalnetConfig(config)) {
-    config.__l1_mode = false;
     return "per";
   }
   const check = await checkTeeAvailability(config, keypair, {
     timeoutMs: 4000,
   });
-  if (check.ok) {
-    config.__l1_mode = false;
-    return "per";
+  if (!check.ok) {
+    console.warn(
+      "Warning: MagicBlock TEE is not available from this location. Continuing in PER mode."
+    );
   }
-  console.warn("Warning: MagicBlock TEE is not available from this location.");
-  console.warn(
-    "You can proceed in L1 MODE (no privacy, but functional on-chain flow)."
-  );
-  const proceed = await confirmAction(
-    options.confirm,
-    "Enable L1 MODE for this contract? yes/no"
-  );
-  if (!proceed) {
-    console.log("Continuing without L1 mode (TEE may still fail).");
-    config.__l1_mode = false;
-    return "per";
-  }
-  await updateContract(config.backendUrl, config.auth.token, contract.id, {
-    executionMode: "l1",
-  });
-  contract.execution_mode = "l1";
-  config.__l1_mode = true;
-  console.log("L1 MODE enabled for this contract.");
-  return "l1";
+  return "per";
 };
 
 const feeFromGross = (amount) => (amount * FEE_BPS) / BPS_DENOMINATOR;
@@ -882,15 +825,6 @@ const getPrivateMilestoneStatus = async (
 ) => {
   const { program, programId } = getProgram(config, keypair);
   const escrowPda = new PublicKey(contract.escrow_pda);
-  if (isL1Mode(contract)) {
-    const milestones = await fetchPublicMilestones(
-      program,
-      escrowPda,
-      programId,
-      [index]
-    );
-    return milestones[0];
-  }
   const { program: erProgram, sessionSigner, sessionPda } =
     await getPerProgramBundle(config, keypair, programId, program.provider);
   const milestones = await fetchPrivateMilestones(
@@ -1318,9 +1252,6 @@ const ensureDelegatedPermission = async (
   keypair,
   permissionedAccount
 ) => {
-  if (config && config.__l1_mode) {
-    return;
-  }
   const permissionPda = permissionPdaFromAccount(permissionedAccount);
   const info = await provider.connection.getAccountInfo(
     permissionPda,
@@ -1364,9 +1295,6 @@ const ensureDelegatedAccount = async (
   accountType,
   pda
 ) => {
-  if (config && config.__l1_mode) {
-    return;
-  }
   const info = await program.provider.connection.getAccountInfo(pda, "confirmed");
   if (info && info.owner.equals(DELEGATION_PROGRAM_ID)) {
     return;
@@ -1410,9 +1338,6 @@ const ensureDelegatedEscrow = async (
   escrowPda,
   client
 ) => {
-  if (config && config.__l1_mode) {
-    return;
-  }
   const info = await program.provider.connection.getAccountInfo(
     escrowPda,
     "confirmed"
@@ -1832,37 +1757,9 @@ const runAddMilestone = async (config, contract, title, options) => {
     return;
   }
 
-  const executionMode = await ensureExecutionMode(config, contract, keypair, options);
-  const l1Mode = executionMode === "l1";
+  await ensureExecutionMode(config, contract, keypair, options);
 
   console.log("Processing.");
-  if (l1Mode) {
-    const milestonePda = deriveMilestonePda(escrowPda, index, programId);
-    const sig = await program.methods
-      .addMilestone(new anchor.BN(escrowId.toString()), index)
-      .accounts({
-        actor: walletKey,
-        escrow: escrowPda,
-        milestone: milestonePda,
-        systemProgram: SystemProgram.programId,
-      })
-      .signers([keypair])
-      .rpc();
-    console.log(`Milestone created. (tx: ${sig})`);
-
-    const milestones = Array.isArray(contract.milestones)
-      ? [...contract.milestones]
-      : [];
-    milestones.push({ index, details: title, status: "created" });
-    const persisted = await updateContractMilestones(config, contract, milestones);
-    if (!persisted) {
-      console.log(
-        "Warning: backend did not persist milestone status (check backend version)."
-      );
-    }
-    successMessage("Milestone added.");
-    return;
-  }
   let privacyKey;
   try {
     privacyKey = await getContractPrivacyKey(config, contract.id, wallet);
@@ -2009,61 +1906,7 @@ const runDisableMilestone = async (config, contract, number, options) => {
     console.error("Check the list with: nebulon contract <id> check milestone list");
     return;
   }
-  const executionMode = await ensureExecutionMode(config, contract, keypair, options);
-  const l1Mode = executionMode === "l1";
-  if (l1Mode) {
-    const { program, connection, programId } = getProgram(config, keypair);
-    const escrowPda = new PublicKey(contract.escrow_pda);
-    const escrowState = await getEscrowState(connection, programId, escrowPda);
-    if (!escrowState) {
-      console.error("Escrow not found on-chain.");
-      process.exit(1);
-    }
-    const ok = await ensureEscrowOwnedByProgramL1(config, keypair, escrowPda);
-    if (!ok) {
-      return;
-    }
-    const escrowId = escrowState.escrowId;
-    const milestonePda = deriveMilestonePda(escrowPda, index, programId);
-    console.log("Verify data and confirm actions please.");
-    renderContractSummary(contract, wallet);
-    console.log("-Action-");
-    console.log("Disable milestone");
-    console.log(`Number : ${index + 1}`);
-    const milestones = Array.isArray(contract.milestones) ? contract.milestones : [];
-    const current = milestones.find((m) => m.index === index);
-    console.log(`Details : \"${current ? getMilestoneLabel(current) : "unknown"}\"`);
-    console.log("");
-    const proceed = await confirmAction(options.confirm, "Proceed? yes/no");
-    if (!proceed) {
-      console.log("Canceled.");
-      return;
-    }
-    console.log("Processing.");
-    const sig = await program.methods
-      .disableMilestone(new anchor.BN(escrowId.toString()), index)
-      .accounts({
-        actor: walletKey,
-        escrow: escrowPda,
-        milestone: milestonePda,
-      })
-      .signers([keypair])
-      .rpc();
-    console.log(`Milestone disabled. (tx: ${sig})`);
-    const nextMilestones = milestones.map((milestone) =>
-      milestone.index === index
-        ? { ...milestone, status: "disabled" }
-        : milestone
-    );
-    const persisted = await updateContractMilestones(config, contract, nextMilestones);
-    if (!persisted) {
-      console.log(
-        "Warning: backend did not persist milestone status (check backend version)."
-      );
-    }
-    successMessage("Milestone disabled.");
-    return;
-  }
+  await ensureExecutionMode(config, contract, keypair, options);
   if (!config.ephemeralProviderUrl) {
     console.error(
       "Warning: MagicBlock RPC is not configured; milestone status checks may be unreliable."
@@ -2329,148 +2172,6 @@ const submitTerms = async (
   throw lastError;
 };
 
-const submitPublicTerms = async (
-  config,
-  contract,
-  keypair,
-  escrowPda,
-  escrowId,
-  totalPayment,
-  deadline
-) => {
-  const { program, programId } = getProgram(config, keypair);
-  const termsPda = deriveTermsPda(escrowPda, programId);
-  const ok = await ensureEscrowOwnedByProgramL1(config, keypair, escrowPda);
-  if (!ok) {
-    return null;
-  }
-  const ix = await program.methods
-    .setPublicTerms(
-      new anchor.BN(escrowId.toString()),
-      buildTermsHash(deadline, totalPayment),
-      new anchor.BN(totalPayment.toString()),
-      new anchor.BN(deadline.toString())
-    )
-    .accounts({
-      user: keypair.publicKey,
-      escrow: escrowPda,
-      terms: termsPda,
-      systemProgram: SystemProgram.programId,
-    })
-    .instruction();
-  ix.keys = ix.keys.map((key) => {
-    if (key.pubkey.equals(escrowPda) || key.pubkey.equals(termsPda)) {
-      return { ...key, isWritable: true };
-    }
-    return key;
-  });
-  const tx = new Transaction().add(ix);
-  const sig = await program.provider.sendAndConfirm(tx, [keypair]);
-  return sig;
-};
-
-const signPublicTermsOnChain = async (
-  config,
-  keypair,
-  escrowPda,
-  escrowId
-) => {
-  const { program, programId } = getProgram(config, keypair);
-  const termsPda = deriveTermsPda(escrowPda, programId);
-  try {
-    const escrowState = await program.account.escrow.fetch(escrowPda);
-    const termsState = await program.account.terms.fetch(termsPda);
-    const escrowIdOnChain = escrowState.escrowId?.toString?.() || String(escrowState.escrowId);
-    const expectedEscrowId = escrowId.toString();
-    if (escrowIdOnChain !== expectedEscrowId) {
-      console.error(
-        `L1 sign precheck: escrow_id mismatch (chain=${escrowIdOnChain}, local=${expectedEscrowId})`
-      );
-    }
-    if (termsState.escrow && termsState.escrow.toBase58) {
-      const termsEscrow = termsState.escrow.toBase58();
-      if (termsEscrow !== escrowPda.toBase58()) {
-        console.error(
-          `L1 sign precheck: terms.escrow mismatch (terms=${termsEscrow}, escrow=${escrowPda.toBase58()})`
-        );
-      }
-    }
-    if (escrowState.fundedAmount && escrowState.fundedAmount.toString) {
-      const funded = escrowState.fundedAmount.toString();
-      if (funded !== "0") {
-        console.error(`L1 sign precheck: funded_amount is ${funded}, expected 0`);
-      }
-    }
-    if (escrowState.fundingOk) {
-      console.error("L1 sign precheck: funding_ok already true");
-    }
-  } catch (error) {
-    console.error("L1 sign precheck failed to fetch escrow/terms.");
-  }
-  const ix = await program.methods
-    .signPublicTerms(new anchor.BN(escrowId.toString()))
-    .accounts({
-      user: keypair.publicKey,
-      escrow: escrowPda,
-      terms: termsPda,
-    })
-    .instruction();
-  ix.keys = ix.keys.map((key) => {
-    if (key.pubkey.equals(escrowPda) || key.pubkey.equals(termsPda)) {
-      return { ...key, isWritable: true };
-    }
-    return key;
-  });
-  const tx = new Transaction().add(ix);
-  const sig = await program.provider.sendAndConfirm(tx, [keypair]);
-  return { sig, termsPda };
-};
-
-const commitPublicTermsOnChain = async (
-  config,
-  keypair,
-  escrowPda,
-  escrowId
-) => {
-  const { program, programId } = getProgram(config, keypair);
-  const termsPda = deriveTermsPda(escrowPda, programId);
-  const ix = await program.methods
-    .commitPublicTerms(new anchor.BN(escrowId.toString()))
-    .accounts({
-      user: keypair.publicKey,
-      escrow: escrowPda,
-      terms: termsPda,
-    })
-    .instruction();
-  ix.keys = ix.keys.map((key) => {
-    if (key.pubkey.equals(escrowPda) || key.pubkey.equals(termsPda)) {
-      return { ...key, isWritable: true };
-    }
-    return key;
-  });
-  const tx = new Transaction().add(ix);
-  return program.provider.sendAndConfirm(tx, [keypair]);
-};
-
-const fetchPublicMilestones = async (
-  program,
-  escrowPda,
-  programId,
-  indices
-) => {
-  const milestones = [];
-  for (const index of indices) {
-    const pda = deriveMilestonePda(escrowPda, index, programId);
-    try {
-      const state = await program.account.milestone.fetch(pda);
-      milestones.push({ index, status: Number(state.status), pda });
-    } catch {
-      milestones.push({ index, status: null, pda });
-    }
-  }
-  return milestones;
-};
-
 const runAddTerm = async (config, contract, field, value, options) => {
   const { keypair, wallet, walletKey } = getWalletContext(config);
   ensureEditableContract(contract);
@@ -2534,31 +2235,27 @@ const runAddTerm = async (config, contract, field, value, options) => {
     return;
   }
 
-  const executionMode = await ensureExecutionMode(config, contract, keypair, options);
-  const l1Mode = executionMode === "l1";
+  await ensureExecutionMode(config, contract, keypair, options);
 
   let encryptedTerms = null;
-  if (!l1Mode) {
-    try {
-      const privacyKey = await getContractPrivacyKey(config, contract.id, wallet);
-      encryptedTerms = encryptTermsPayload(
-        privacyKey,
-        contract.id,
-        deadline,
-        totalPayment
-      );
-    } catch (error) {
-      console.error(
-        "Privacy key exchange pending. Wait for the counterparty to accept."
-      );
-      process.exit(1);
-    }
+  try {
+    const privacyKey = await getContractPrivacyKey(config, contract.id, wallet);
+    encryptedTerms = encryptTermsPayload(
+      privacyKey,
+      contract.id,
+      deadline,
+      totalPayment
+    );
+  } catch (error) {
+    console.error(
+      "Privacy key exchange pending. Wait for the counterparty to accept."
+    );
+    process.exit(1);
   }
 
   await updateContractIfNegotiating(config, contract, {
-    ...(l1Mode ? {} : { termsEncrypted: encryptedTerms }),
+    termsEncrypted: encryptedTerms,
     termsHash: buildTermsHashHex(deadline, totalPayment),
-    ...(l1Mode ? { deadline, totalPayment } : {}),
   });
 
   if (!deadline || !totalPayment) {
@@ -2576,26 +2273,16 @@ const runAddTerm = async (config, contract, field, value, options) => {
 
   console.log("Processing.");
   try {
-    const sig = l1Mode
-      ? await submitPublicTerms(
-          config,
-          contract,
-          keypair,
-          escrowPda,
-          escrowId,
-          totalPayment,
-          deadline
-        )
-      : await submitTerms(
-          config,
-          contract,
-          keypair,
-          escrowPda,
-          escrowId,
-          totalPayment,
-          deadline,
-          encryptedTerms
-        );
+    const sig = await submitTerms(
+      config,
+      contract,
+      keypair,
+      escrowPda,
+      escrowId,
+      totalPayment,
+      deadline,
+      encryptedTerms
+    );
     if (!sig) {
       return;
     }
@@ -2613,14 +2300,13 @@ const runSignContract = async (config, contract, options) => {
     console.error("Contract has no escrow. Unable to sign.");
     process.exit(1);
   }
-  const executionMode = await ensureExecutionMode(config, contract, keypair, options);
-  const l1Mode = executionMode === "l1";
+  await ensureExecutionMode(config, contract, keypair, options);
   ensureContractPhase(
     contract,
     ["negotiating", "awaiting_signatures"],
     "Finish terms/milestones, then sign."
   );
-  if (!l1Mode && contract.terms_encrypted && !contract.privacyReady) {
+  if (contract.terms_encrypted && !contract.privacyReady) {
     console.error("Privacy key exchange pending. Unable to read terms.");
     process.exit(1);
   }
@@ -2687,41 +2373,35 @@ const runSignContract = async (config, contract, options) => {
   console.log("Processing.");
   let signSig = null;
   let commitSig = null;
-  if (l1Mode) {
-    signSig = (await signPublicTermsOnChain(
+  const { termsPda } = await ensureTermsPrepared(
+    config,
+    contract,
+    keypair,
+    escrowPda,
+    escrowId
+  );
+  const { program: erProgram, sessionSigner, sessionPda } =
+    await getPerProgramBundle(
       config,
       keypair,
-      escrowPda,
-      escrowId
-    )).sig;
-    console.log(`Signature submitted. (tx: ${signSig})`);
-    try {
-      commitSig = await commitPublicTermsOnChain(
-        config,
-        keypair,
-        escrowPda,
-        escrowId
-      );
-    } catch (error) {
-      commitSig = null;
-    }
-  } else {
-    const { termsPda } = await ensureTermsPrepared(
-      config,
-      contract,
-      keypair,
-      escrowPda,
-      escrowId
+      programId,
+      program.provider
     );
-    const { program: erProgram, sessionSigner, sessionPda } =
-      await getPerProgramBundle(
-        config,
-        keypair,
-        programId,
-        program.provider
-      );
-    signSig = await erProgram.methods
-      .signPrivateTerms(new anchor.BN(escrowId.toString()))
+  signSig = await erProgram.methods
+    .signPrivateTerms(new anchor.BN(escrowId.toString()))
+    .accounts({
+      user: keypair.publicKey,
+      payer: sessionSigner.publicKey,
+      sessionToken: sessionPda,
+      escrow: escrowPda,
+      terms: termsPda,
+    })
+    .signers([sessionSigner])
+    .rpc({ skipPreflight: true });
+  console.log(`Signature submitted. (tx: ${signSig})`);
+  try {
+    commitSig = await erProgram.methods
+      .commitTerms(new anchor.BN(escrowId.toString()))
       .accounts({
         user: keypair.publicKey,
         payer: sessionSigner.publicKey,
@@ -2731,22 +2411,8 @@ const runSignContract = async (config, contract, options) => {
       })
       .signers([sessionSigner])
       .rpc({ skipPreflight: true });
-    console.log(`Signature submitted. (tx: ${signSig})`);
-    try {
-      commitSig = await erProgram.methods
-        .commitTerms(new anchor.BN(escrowId.toString()))
-        .accounts({
-          user: keypair.publicKey,
-          payer: sessionSigner.publicKey,
-          sessionToken: sessionPda,
-          escrow: escrowPda,
-          terms: termsPda,
-        })
-        .signers([sessionSigner])
-        .rpc({ skipPreflight: true });
-    } catch (error) {
-      commitSig = null;
-    }
+  } catch (error) {
+    commitSig = null;
   }
   if (commitSig) {
     console.log(`Terms committed. (tx: ${commitSig})`);
@@ -2818,7 +2484,7 @@ const runFundContract = async (config, contract, options) => {
     process.exit(1);
   }
   ensureContractPhase(contract, ["waiting_for_funding"], "Run sign first.");
-  if (!isL1Mode(contract) && contract.terms_encrypted && !contract.privacyReady) {
+  if (contract.terms_encrypted && !contract.privacyReady) {
     console.error("Privacy key exchange pending. Unable to read terms.");
     process.exit(1);
   }
@@ -2989,75 +2655,7 @@ const runUpdateMilestone = async (config, contract, number, options) => {
     console.error("Check the list with: nebulon contract <id> check milestone list");
     return;
   }
-  const executionMode = await ensureExecutionMode(config, contract, keypair, options);
-  const l1Mode = executionMode === "l1";
-  if (l1Mode) {
-    const { program, connection, programId } = getProgram(config, keypair);
-    const escrowPda = new PublicKey(contract.escrow_pda);
-    const escrowState = await getEscrowState(connection, programId, escrowPda);
-    if (!escrowState) {
-      console.error("Escrow not found on-chain.");
-      process.exit(1);
-    }
-    const ok = await ensureEscrowOwnedByProgramL1(config, keypair, escrowPda);
-    if (!ok) {
-      return;
-    }
-    const escrowId = escrowState.escrowId;
-    const milestonePda = deriveMilestonePda(escrowPda, index, programId);
-
-    console.log("Verify data and confirm actions please.");
-    renderContractSummary(contract, wallet);
-    console.log("-Action-");
-    console.log("Update milestone");
-    console.log(`Number : ${index + 1}`);
-    console.log("Status : ready");
-    console.log("");
-
-    const canProceed = await renderBalancesOrAbort(
-      config,
-      walletKey,
-      contract.mint || config.usdcMint
-    );
-    if (!canProceed) {
-      return;
-    }
-
-    const proceed = await confirmAction(options.confirm, "Proceed? yes/no");
-    if (!proceed) {
-      console.log("Canceled.");
-      return;
-    }
-
-    console.log("Processing.");
-    const sig = await program.methods
-      .submitMilestone(new anchor.BN(escrowId.toString()), index)
-      .accounts({
-        contractor: walletKey,
-        escrow: escrowPda,
-        milestone: milestonePda,
-      })
-      .signers([keypair])
-      .rpc();
-    console.log(`Milestone updated. (tx: ${sig})`);
-
-    const milestones = Array.isArray(contract.milestones)
-      ? contract.milestones.map((milestone) =>
-          milestone.index === index
-            ? { ...milestone, status: "ready" }
-            : milestone
-        )
-      : [];
-    const persisted = await updateContractMilestones(config, contract, milestones);
-    if (!persisted) {
-      console.log(
-        "Warning: backend did not persist milestone status (check backend version)."
-      );
-    }
-    await runSyncFlags(config, contract, { ...options, confirm: true });
-    successMessage("Milestone updated.");
-    return;
-  }
+  await ensureExecutionMode(config, contract, keypair, options);
   if (!config.ephemeralProviderUrl) {
     console.error(
       "Warning: MagicBlock RPC is not configured; milestone status checks may be unreliable."
@@ -3187,80 +2785,7 @@ const runConfirmMilestone = async (config, contract, number, options) => {
     process.exit(1);
   }
 
-  const executionMode = await ensureExecutionMode(config, contract, keypair, options);
-  const l1Mode = executionMode === "l1";
-  if (l1Mode) {
-    const { program, connection, programId } = getProgram(config, keypair);
-    const escrowPda = new PublicKey(contract.escrow_pda);
-    const escrowState = await getEscrowState(connection, programId, escrowPda);
-    if (!escrowState) {
-      console.error("Escrow not found on-chain.");
-      process.exit(1);
-    }
-    const ok = await ensureEscrowOwnedByProgramL1(config, keypair, escrowPda);
-    if (!ok) {
-      return;
-    }
-    const escrowId = escrowState.escrowId;
-    const milestonePda = deriveMilestonePda(escrowPda, index, programId);
-
-    console.log("Verify data and confirm actions please.");
-    renderContractSummary(contract, wallet);
-    console.log("-Action-");
-    console.log("Confirm milestone");
-    console.log(`Number : ${index + 1}`);
-    console.log("");
-
-    const canProceed = await renderBalancesOrAbort(
-      config,
-      walletKey,
-      contract.mint || config.usdcMint
-    );
-    if (!canProceed) {
-      return;
-    }
-
-    const proceed = await confirmAction(options.confirm, "Proceed? yes/no");
-    if (!proceed) {
-      console.log("Canceled.");
-      return;
-    }
-
-    console.log("Processing.");
-    const sig = await program.methods
-      .approveMilestone(new anchor.BN(escrowId.toString()), index)
-      .accounts({
-        client: walletKey,
-        escrow: escrowPda,
-        milestone: milestonePda,
-      })
-      .signers([keypair])
-      .rpc();
-    console.log(`Milestone confirmed. (tx: ${sig})`);
-
-    const milestones = Array.isArray(contract.milestones)
-      ? contract.milestones.map((milestone) =>
-          milestone.index === index
-            ? { ...milestone, status: "approved" }
-            : milestone
-        )
-      : [];
-    const persisted = await updateContractMilestones(config, contract, milestones);
-    if (!persisted) {
-      console.log(
-        "Warning: backend did not persist milestone status (check backend version)."
-      );
-    }
-    await runSyncFlags(config, contract, { ...options, confirm: true });
-    try {
-      const refreshed = await getEscrowState(connection, programId, escrowPda);
-      if (refreshed && refreshed.readyToClaim) {
-        successMessage("Contract funds are now ready to claim by the service provider.");
-      }
-    } catch {}
-    successMessage("Milestone confirmed.");
-    return;
-  }
+  await ensureExecutionMode(config, contract, keypair, options);
 
   console.log("Verify data and confirm actions please.");
   renderContractSummary(contract, wallet);
@@ -3618,204 +3143,12 @@ const updatePrivateMilestoneStatus = async (
   return sig;
 };
 
-const runSyncFlagsL1 = async (config, contract, options) => {
-  const { keypair, walletKey } = getWalletContext(config);
-  if (!contract.escrow_pda) {
-    console.error("Contract has no escrow.");
-    process.exit(1);
-  }
-
-  const { program, connection, programId } = getProgram(config, keypair);
-  const escrowPda = new PublicKey(contract.escrow_pda);
-  const escrowState = await getEscrowState(connection, programId, escrowPda);
-  if (!escrowState) {
-    console.error("Escrow not found on-chain.");
-    process.exit(1);
-  }
-  const ok = await ensureEscrowOwnedByProgramL1(config, keypair, escrowPda);
-  if (!ok) {
-    return;
-  }
-
-  const escrowId = escrowState.escrowId;
-  const termsPda = deriveTermsPda(escrowPda, programId);
-
-  let terms;
-  try {
-    terms = await program.account.terms.fetch(termsPda);
-  } catch (error) {
-    console.error("Terms not available on-chain yet.");
-    process.exit(1);
-  }
-
-  const milestoneIndices = Array.isArray(contract.milestones)
-    ? contract.milestones.map((milestone) => milestone.index)
-    : [];
-  milestoneIndices.sort((a, b) => a - b);
-  const milestones = await fetchPublicMilestones(
-    program,
-    escrowPda,
-    programId,
-    milestoneIndices
-  );
-  const milestonesHash = buildMilestonesHash(milestones);
-
-  const fundedAmount =
-    typeof escrowState.fundedAmount === "bigint"
-      ? escrowState.fundedAmount
-      : BigInt(escrowState.fundedAmount || 0);
-  const canCommitMilestones = fundedAmount === 0n && !escrowState.fundingOk;
-  const totalPayment = BigInt(terms.totalPayment.toString());
-  const requiredNet = netFromGross(totalPayment);
-  const fundingOk = fundedAmount >= requiredNet;
-  const hasTermsHash = escrowState.termsHash
-    ? escrowState.termsHash.some((byte) => byte !== 0)
-    : false;
-  if (!hasTermsHash) {
-    console.log("Terms hash not committed on-chain yet.");
-  }
-
-  const deadline = resolveTermsDeadline(
-    Number(terms.deadline.toString()),
-    escrowState.fundedAt
-  );
-  const now = Math.floor(Date.now() / 1000);
-  const deadlinePassed = deadline ? now > deadline : false;
-
-  const statuses = milestones.map((milestone) =>
-    Number.isFinite(milestone.status) ? milestone.status : 0
-  );
-  const allApproved =
-    milestones.length === 0 ||
-    statuses.every((status) => status === 3 || status === 4);
-  const allSubmitted =
-    milestones.length === 0 ||
-    statuses.every((status) => status === 1 || status === 3 || status === 4);
-  const hasUnsubmitted =
-    milestones.length === 0 ||
-    statuses.some((status) => status === 0 || status === 2);
-
-  const milestoneCount = milestones.length;
-  if (milestoneCount > 255) {
-    console.error("Too many milestones to sync.");
-    process.exit(1);
-  }
-
-  const proceed = await confirmAction(options.confirm, "Update escrow flags? yes/no");
-  if (!proceed) {
-    console.log("Canceled.");
-    return;
-  }
-
-  let didUpdate = false;
-  const milestoneAccounts = milestones.map((milestone) => ({
-    pubkey: milestone.pda,
-    isWritable: false,
-    isSigner: false,
-  }));
-
-  if (canCommitMilestones && milestonesHash && escrowState.milestonesHash) {
-    const currentHash = Buffer.from(escrowState.milestonesHash);
-    if (!currentHash.equals(milestonesHash)) {
-      const sig = await program.methods
-        .commitPublicMilestones(
-          new anchor.BN(escrowId.toString()),
-          Array.from(milestonesHash)
-        )
-        .accounts({
-          user: walletKey,
-          escrow: escrowPda,
-        })
-        .signers([keypair])
-        .rpc();
-      console.log(`Milestones committed. (tx: ${sig})`);
-      didUpdate = true;
-    }
-  }
-
-  if (hasTermsHash && fundingOk && !escrowState.fundingOk) {
-    const sig = await program.methods
-      .setFundingOkPublic(new anchor.BN(escrowId.toString()))
-      .accounts({
-        user: walletKey,
-        escrow: escrowPda,
-        terms: termsPda,
-      })
-      .signers([keypair])
-      .rpc();
-    console.log(`Funding verified. (tx: ${sig})`);
-    didUpdate = true;
-  }
-
-  let readyToClaimSet = false;
-  if (hasTermsHash && fundingOk && allApproved && !escrowState.readyToClaim) {
-    const sig = await program.methods
-      .setReadyToClaimPublic(new anchor.BN(escrowId.toString()), milestoneCount)
-      .accounts({
-        user: walletKey,
-        escrow: escrowPda,
-      })
-      .remainingAccounts(milestoneAccounts)
-      .signers([keypair])
-      .rpc();
-    console.log(`Ready to claim set. (tx: ${sig})`);
-    didUpdate = true;
-    readyToClaimSet = true;
-  }
-
-  if (!readyToClaimSet && deadlinePassed && fundingOk && hasUnsubmitted && !escrowState.timeoutRefundReady) {
-    const sig = await program.methods
-      .setTimeoutRefundReadyPublic(
-        new anchor.BN(escrowId.toString()),
-        milestoneCount
-      )
-      .accounts({
-        user: walletKey,
-        escrow: escrowPda,
-        terms: termsPda,
-      })
-      .remainingAccounts(milestoneAccounts)
-      .signers([keypair])
-      .rpc();
-    console.log(`Timeout refund ready set. (tx: ${sig})`);
-    didUpdate = true;
-  }
-
-  if (!readyToClaimSet && deadlinePassed && fundingOk && allSubmitted && !escrowState.timeoutFundsReady) {
-    const sig = await program.methods
-      .setTimeoutFundsReadyPublic(
-        new anchor.BN(escrowId.toString()),
-        milestoneCount
-      )
-      .accounts({
-        user: walletKey,
-        escrow: escrowPda,
-        terms: termsPda,
-      })
-      .remainingAccounts(milestoneAccounts)
-      .signers([keypair])
-      .rpc();
-    console.log(`Timeout funds ready set. (tx: ${sig})`);
-    didUpdate = true;
-  }
-
-  if (didUpdate) {
-    successMessage("Sync completed.");
-    return;
-  }
-  console.log("No updates were required.");
-};
-
 const runSyncFlags = async (config, contract, options) => {
   const { keypair, walletKey } = getWalletContext(config);
   if (!contract.escrow_pda) {
     console.error("Contract has no escrow.");
     process.exit(1);
   }
-  if (isL1Mode(contract)) {
-    await runSyncFlagsL1(config, contract, options);
-    return;
-  }
 
   const { program, connection, programId } = getProgram(config, keypair);
   const escrowPda = new PublicKey(contract.escrow_pda);
@@ -3826,7 +3159,7 @@ const runSyncFlags = async (config, contract, options) => {
   }
 
   const escrowId = escrowState.escrowId;
-  const { termsPda, program: l1Program } = await ensureTermsPrepared(
+  const { termsPda, program: baseProgram } = await ensureTermsPrepared(
     config,
     contract,
     keypair,
@@ -3851,16 +3184,16 @@ const runSyncFlags = async (config, contract, options) => {
         index,
       },
     };
-    await ensurePermission(config, l1Program, keypair, privateMilestonePda, members);
+    await ensurePermission(config, baseProgram, keypair, privateMilestonePda, members);
     await ensureDelegatedPermission(
       config,
-      l1Program.provider,
+      baseProgram.provider,
       keypair,
       privateMilestonePda
     );
     await ensureDelegatedAccount(
       config,
-      l1Program,
+      baseProgram,
       keypair,
       members.accountType,
       privateMilestonePda
@@ -3869,7 +3202,7 @@ const runSyncFlags = async (config, contract, options) => {
 
   await ensureDelegatedEscrow(
     config,
-    l1Program,
+    baseProgram,
     keypair,
     escrowId,
     escrowPda,
@@ -3877,7 +3210,7 @@ const runSyncFlags = async (config, contract, options) => {
   );
 
   const { program: erProgram, sessionSigner, sessionPda } =
-    await getPerProgramBundle(config, keypair, programId, l1Program.provider);
+    await getPerProgramBundle(config, keypair, programId, baseProgram.provider);
 
   let terms;
   try {
@@ -4116,29 +3449,17 @@ const runMilestoneList = async (config, contract) => {
   milestoneIndices.sort((a, b) => a - b);
 
   let milestones = [];
-  if (isL1Mode(contract)) {
-    milestones = await fetchPublicMilestones(
-      program,
+  const { program: erProgram } = await getEphemeralProgram(config, keypair);
+  try {
+    milestones = await fetchPrivateMilestones(
+      erProgram,
       escrowPda,
       programId,
       milestoneIndices
     );
-  } else {
-    const { program: erProgram } = await getEphemeralProgram(
-      config,
-      keypair
-    );
-    try {
-      milestones = await fetchPrivateMilestones(
-        erProgram,
-        escrowPda,
-        programId,
-        milestoneIndices
-      );
-    } catch (error) {
-      console.error("Private milestones are not available yet.");
-      process.exit(1);
-    }
+  } catch (error) {
+    console.error("Private milestones are not available yet.");
+    process.exit(1);
   }
 
   const metadataByIndex = new Map(
@@ -4191,31 +3512,18 @@ const runMilestoneStatus = async (config, contract, number) => {
   }
 
   let milestone;
-  if (isL1Mode(contract)) {
-    const items = await fetchPublicMilestones(
-      program,
+  const { program: erProgram } = await getEphemeralProgram(config, keypair);
+  try {
+    const items = await fetchPrivateMilestones(
+      erProgram,
       escrowPda,
       programId,
       [index]
     );
     milestone = items[0];
-  } else {
-    const { program: erProgram } = await getEphemeralProgram(
-      config,
-      keypair
-    );
-    try {
-      const items = await fetchPrivateMilestones(
-        erProgram,
-        escrowPda,
-        programId,
-        [index]
-      );
-      milestone = items[0];
-    } catch (error) {
-      console.error("Private milestone is not available yet.");
-      process.exit(1);
-    }
+  } catch (error) {
+    console.error("Private milestone is not available yet.");
+    process.exit(1);
   }
 
   const meta = (contract.milestones || []).find((m) => m.index === index) || {};
@@ -4258,7 +3566,7 @@ const runContractDetails = async (config, contract) => {
   console.log("Contract details");
   console.log(`ID: ${contract.id}`);
   console.log(`Status: ${contract.status}`);
-  console.log(`Execution mode: ${getExecutionMode(contract)}`);
+  console.log("Mode: PER");
   console.log(`Role: ${role}`);
   console.log(
     formatParticipant(
@@ -4279,14 +3587,10 @@ const runContractDetails = async (config, contract) => {
   console.log(`Escrow: ${contract.escrow_pda || "n/a"}`);
   console.log(`Mint: ${contract.mint || "n/a"}`);
   console.log(`Vault: ${contract.vault_token || "n/a"}`);
-  const privacyLabel = isL1Mode(contract)
-    ? "l1"
-    : contract.privacyReady
-      ? "ready"
-      : "pending";
+  const privacyLabel = contract.privacyReady ? "ready" : "pending";
   console.log(`Privacy: ${privacyLabel}`);
 
-  if (!isL1Mode(contract) && contract.terms_encrypted && !contract.privacyReady) {
+  if (contract.terms_encrypted && !contract.privacyReady) {
     console.log("Terms: encrypted (waiting on privacy keys)");
   } else {
     console.log(`Deadline: ${contract.deadline ? formatDeadlineValue(contract.deadline) : "missing"}`);
@@ -4346,7 +3650,7 @@ const runContractStatus = async (config, contract) => {
     console.log(`Role: ${role}`);
   }
   console.log(`Current status: ${contract.status}`);
-  console.log(`Execution mode: ${getExecutionMode(contract)}`);
+  console.log("Mode: PER");
   if (contract.created_at) {
     console.log(`Created: ${formatCreatedAt(contract.created_at)}`);
   }
@@ -4467,46 +3771,6 @@ const runRateContract = async (config, contract, scoreValue) => {
   console.log(`Rating submitted: ${score} star${score === 1 ? "" : "s"}.`);
 };
 
-const runContractMode = async (config, contract, mode, options) => {
-  const { wallet } = getWalletContext(config);
-  const role = getRole(contract, wallet);
-  if (role !== "client" && role !== "contractor") {
-    console.error("Only contract participants can change execution mode.");
-    process.exit(1);
-  }
-  const desired = (mode || "").toString().toLowerCase();
-  if (desired !== "per" && desired !== "l1") {
-    console.error("Usage: nebulon contract <id> mode per|l1");
-    return;
-  }
-  const allowedStatuses = new Set(["waiting_for_init", "negotiating", "awaiting_signatures"]);
-  if (!allowedStatuses.has(contract.status)) {
-    console.error("Execution mode can only be changed before funding.");
-    return;
-  }
-  if (desired === getExecutionMode(contract)) {
-    console.log(`Execution mode is already ${desired.toUpperCase()}.`);
-    return;
-  }
-  const proceed = await confirmAction(
-    options.confirm,
-    `Set execution mode to ${desired.toUpperCase()}? yes/no`
-  );
-  if (!proceed) {
-    console.log("Canceled.");
-    return;
-  }
-  await updateContract(config.backendUrl, config.auth.token, contract.id, {
-    executionMode: desired,
-  });
-  contract.execution_mode = desired;
-  if (desired === "l1") {
-    console.log("L1 MODE enabled for this contract (no TEE privacy).");
-  } else {
-    console.log("PER mode enabled for this contract.");
-  }
-};
-
 const runCheckTerms = async (config, contract) => {
   const { wallet } = getWalletContext(config);
   const role = getRole(contract, wallet);
@@ -4514,7 +3778,7 @@ const runCheckTerms = async (config, contract) => {
     console.error("Only contract participants can view terms.");
     process.exit(1);
   }
-  if (!isL1Mode(contract) && contract.terms_encrypted && !contract.privacyReady) {
+  if (contract.terms_encrypted && !contract.privacyReady) {
     console.error("Privacy key exchange pending. Unable to read terms.");
     process.exit(1);
   }
@@ -4808,10 +4072,6 @@ const runContractCommand = async (args, options = {}) => {
   }
   if (action === "rate") {
     await runRateContract(config, contract, rest[1]);
-    return;
-  }
-  if (action === "mode") {
-    await runContractMode(config, contract, rest[1], options);
     return;
   }
 
