@@ -19,6 +19,7 @@ import {
 import * as anchor from '@coral-xyz/anchor';
 import {
   getAuthToken,
+  ConnectionMagicRouter,
   createDelegatePermissionInstruction,
   permissionPdaFromAccount,
   PERMISSION_PROGRAM_ID,
@@ -295,18 +296,16 @@ export default function ContractDetailsPage({ params }: { params: { id: string }
   const [milestoneSaving, setMilestoneSaving] = useState(false);
   const [milestoneStep, setMilestoneStep] = useState<string | null>(null);
   const [milestoneProgress, setMilestoneProgress] = useState(0);
-  const [perSetupStep, setPerSetupStep] = useState<string | null>(null);
-  const [perSetupProgress, setPerSetupProgress] = useState(0);
-  const [perSetupReady, setPerSetupReady] = useState(false);
-  const [perSetupLoading, setPerSetupLoading] = useState(false);
-  const [perSetupChecked, setPerSetupChecked] = useState(false);
   const [cachedBlockhash, setCachedBlockhash] = useState<{
     blockhash: string;
     lastValidBlockHeight: number;
     fetchedAt: number;
   } | null>(null);
   const [loading, setLoading] = useState(true);
-  const [actionLoading, setActionLoading] = useState(false);
+  const [actionLoading, setActionLoading] = useState<{
+    type: string;
+    index?: number;
+  } | null>(null);
   const [backendConfig, setBackendConfig] = useState<BackendConfig | null>(null);
   const [teeStatus, setTeeStatus] = useState<'unknown' | 'checking' | 'available' | 'unavailable'>('unknown');
   const [walletRpcEndpoint, setWalletRpcEndpoint] = useState<string | null>(null);
@@ -356,6 +355,7 @@ export default function ContractDetailsPage({ params }: { params: { id: string }
     false;
   const isLocalnet = network === 'localnet' || localnetByUrl;
   const isDevnet = network === 'devnet';
+  const shouldUseSessionToken = isLocalnet || isDevnet;
   const normalizedBackendRpc = backendConfig?.rpcUrl
     ? normalizeRpcEndpoint(backendConfig.rpcUrl)
     : null;
@@ -388,6 +388,12 @@ export default function ContractDetailsPage({ params }: { params: { id: string }
   const hasContractorSigned = Boolean(contract?.contractor_signed_at);
   const currentUserSigned =
     (isClient && hasClientSigned) || (isContractor && hasContractorSigned);
+  const trimAddress = (value?: string | null) =>
+    value ? `${value.slice(0, 4)}...${value.slice(-4)}` : '--';
+  const isAnyActionLoading = actionLoading !== null;
+  const isActionLoading = (type: string, index?: number) =>
+    actionLoading?.type === type &&
+    (index === undefined || actionLoading.index === index);
   const waitingForOtherSignature =
     contract?.status === 'awaiting_signatures' && currentUserSigned;
   const selectedDeadlineDays =
@@ -584,35 +590,10 @@ export default function ContractDetailsPage({ params }: { params: { id: string }
   };
 
   useEffect(() => {
-    if (!isDevnet || teeStatus !== 'unknown') {
-      return;
-    }
-    if (executionMode === 'l1' || contract?.execution_mode === 'l1') {
-      return;
-    }
-    if (!publicKey || !signMessage) {
-      return;
-    }
-    checkTEEAvailability().catch(() => null);
-  }, [isDevnet, teeStatus, executionMode, contract?.execution_mode, publicKey, signMessage]);
-
-  useEffect(() => {
     if (!contract) return;
     const mode = (contract.execution_mode || 'per').toLowerCase() === 'l1' ? 'l1' : 'per';
     setExecutionMode(mode);
   }, [contract?.execution_mode, contract]);
-
-  useEffect(() => {
-    if (!isLocalnet) {
-      setPerSetupReady(false);
-      setPerSetupChecked(false);
-      return;
-    }
-    if (!publicKey || !backendConfig?.programId) {
-      return;
-    }
-    checkSessionStatus().catch(() => null);
-  }, [isLocalnet, publicKey, backendConfig?.programId]);
 
   useEffect(() => {
     if (!backendConfig?.rpcUrl || !publicKey) {
@@ -840,7 +821,7 @@ export default function ContractDetailsPage({ params }: { params: { id: string }
       async () => {
       setShowConfirmModal(false);
       setSubmittingTerms(true);
-      setActionLoading(true);
+      setActionLoading({ type: 'submitTerms' });
       try {
         if (publicKey?.toString() !== contract?.client_wallet) {
           toast({
@@ -851,32 +832,21 @@ export default function ContractDetailsPage({ params }: { params: { id: string }
           return;
         }
 
-        const mode =
-          executionMode === 'l1' || contract?.execution_mode === 'l1' ? 'l1' : 'per';
-        if (mode === 'l1') {
-          const sig = await submitPublicTermsOnChain(deadlineSeconds, paymentBase);
+        if (!signMessage) {
           toast({
-            title: 'Terms submitted on-chain',
-            description: renderTxCopy(sig),
-            variant: 'success',
+            title: 'Wallet lacks signMessage',
+            description: 'PER mode requires signMessage for TEE auth.',
+            variant: 'destructive',
           });
-        } else {
-          if (!signMessage) {
-            toast({
-              title: 'Wallet lacks signMessage',
-              description: 'PER mode requires signMessage for TEE auth.',
-              variant: 'destructive',
-            });
-            return;
-          }
-          const { sig, usedSession } = await submitPrivateTermsOnChain(deadlineSeconds, paymentBase);
-          const label = usedSession ? 'Session key' : 'Wallet';
-          toast({
-            title: 'Private terms submitted',
-            description: renderTxCopy(sig, `Signed with ${label}.`),
-            variant: 'success',
-          });
+          return;
         }
+        const { sig, usedSession } = await submitPrivateTermsOnChain(deadlineSeconds, paymentBase);
+        const label = usedSession ? 'Session key' : 'Wallet';
+        toast({
+          title: 'Private terms submitted',
+          description: renderTxCopy(sig, `Signed with ${label}.`),
+          variant: 'success',
+        });
 
         const token = localStorage.getItem('authToken');
         const response = await fetch(`${API_URL}/v1/contracts/${contractId}`, {
@@ -915,8 +885,8 @@ export default function ContractDetailsPage({ params }: { params: { id: string }
           variant: 'destructive',
         });
       } finally {
-        setSubmittingTerms(false);
-        setActionLoading(false);
+      setSubmittingTerms(false);
+      setActionLoading(null);
       }
     },
     { ticket: buildFeeTicket(amountBase), deadline: deadlineLabel }
@@ -1228,7 +1198,7 @@ export default function ContractDetailsPage({ params }: { params: { id: string }
   const handleInit = async () => {
     if (!contract) return;
     
-    setActionLoading(true);
+    setActionLoading({ type: 'init' });
     try {
       console.log('[init] start', { contractId, hasEscrow: Boolean(contract.escrow_pda) });
       // Check if contract is in valid state for initialization
@@ -1242,9 +1212,26 @@ export default function ContractDetailsPage({ params }: { params: { id: string }
         return;
       }
 
-      console.log('[init] ensureExecutionMode');
-      const modeToUse = await ensureExecutionMode();
-      const config = backendConfig || (await loadBackendConfig());
+      const baseConfig = backendConfig || (await loadBackendConfig());
+      const resolvedValidator = await resolveDelegationValidator(baseConfig);
+      const config =
+        resolvedValidator && resolvedValidator.toBase58() !== baseConfig.ephemeralValidatorIdentity
+          ? { ...baseConfig, ephemeralValidatorIdentity: resolvedValidator.toBase58() }
+          : baseConfig;
+      if (config !== baseConfig) {
+        setBackendConfig(config);
+      }
+      const modeToUse: 'per' = 'per';
+      if (executionMode !== 'per') {
+        setExecutionMode('per');
+      }
+      if (contract.execution_mode !== 'per') {
+        try {
+          await updateExecutionMode('per');
+        } catch {
+          // best-effort; continue with PER locally
+        }
+      }
 
       // Create escrow on Solana
       console.log('[init] createEscrowOnChain', { modeToUse });
@@ -1267,7 +1254,7 @@ export default function ContractDetailsPage({ params }: { params: { id: string }
         variant: 'destructive',
       });
     } finally {
-      setActionLoading(false);
+      setActionLoading(null);
     }
   };
 
@@ -1309,7 +1296,15 @@ export default function ContractDetailsPage({ params }: { params: { id: string }
   };
 
   const ensureExecutionMode = async () => {
-    const config = backendConfig || (await loadBackendConfig());
+    const baseConfig = backendConfig || (await loadBackendConfig());
+    const resolvedValidator = await resolveDelegationValidator(baseConfig);
+    const config =
+      resolvedValidator && resolvedValidator.toBase58() !== baseConfig.ephemeralValidatorIdentity
+        ? { ...baseConfig, ephemeralValidatorIdentity: resolvedValidator.toBase58() }
+        : baseConfig;
+    if (config !== baseConfig) {
+      setBackendConfig(config);
+    }
     const network = (config?.network || '').toLowerCase();
     const localnet = network === 'localnet';
     const devnet = network === 'devnet';
@@ -1486,15 +1481,44 @@ export default function ContractDetailsPage({ params }: { params: { id: string }
     return message.includes('already') || message.includes('exists');
   };
 
-  const getDelegationValidator = (config: BackendConfig) => {
-    const endpoint = (config.ephemeralProviderUrl || config.rpcUrl || '').toLowerCase();
+  const getDelegationValidator = async (config: BackendConfig) =>
+    resolveDelegationValidator(config);
+
+  const resolveDelegationValidator = async (config: BackendConfig) => {
+    const endpoint = (config.ephemeralProviderUrl || '').toLowerCase();
+    const wsEndpoint = (config.ephemeralWsUrl || '').toLowerCase();
     if (endpoint.includes('localhost') || endpoint.includes('127.0.0.1')) {
       return LOCAL_VALIDATOR_IDENTITY;
     }
-    if (config.ephemeralValidatorIdentity) {
-      return new PublicKey(config.ephemeralValidatorIdentity);
+    const safePublicKey = (value?: string) => {
+      try {
+        return value ? new PublicKey(value) : null;
+      } catch {
+        return null;
+      }
+    };
+    const shouldUseRouter =
+      endpoint.includes('router') ||
+      wsEndpoint.includes('router') ||
+      endpoint.includes('magicblock.app') ||
+      wsEndpoint.includes('magicblock.app');
+    if (shouldUseRouter && config.ephemeralProviderUrl) {
+      try {
+        const router = new ConnectionMagicRouter(config.ephemeralProviderUrl, {
+          wsEndpoint: config.ephemeralWsUrl || undefined,
+        });
+        const closest = await router.getClosestValidator();
+        const identity =
+          closest?.validatorIdentity || closest?.identity || closest?.validator;
+        const candidate = safePublicKey(identity || closest?.pubkey || closest);
+        if (candidate) {
+          return candidate;
+        }
+      } catch {
+        // fall back to configured identity below
+      }
     }
-    return null;
+    return safePublicKey(config.ephemeralValidatorIdentity);
   };
 
   const ensureDelegatedPermission = async (
@@ -1735,7 +1759,7 @@ export default function ContractDetailsPage({ params }: { params: { id: string }
       instructions.push(createPermissionIx);
     }
 
-    const delegatedValidator = validator || getDelegationValidator(config);
+    const delegatedValidator = validator || (await getDelegationValidator(config));
     if (delegatedValidator) {
       onStep?.('Delegating permission', 60);
       if (!permissionOwnedByDelegation) {
@@ -1919,10 +1943,13 @@ export default function ContractDetailsPage({ params }: { params: { id: string }
     if (!auth?.token) {
       throw new Error('tee_token_missing');
     }
-    const rpcEndpoint = `${base}?token=${auth.token}`;
+    const useProxy = API_URL.startsWith('http');
+    const rpcEndpoint = useProxy
+      ? `${API_URL}/v1/tee-proxy?token=${auth.token}`
+      : `${base}?token=${auth.token}`;
     let wsEndpoint =
       config.ephemeralTeeWsEndpoint ||
-      rpcEndpoint.replace(/^https:/, 'wss:').replace(/^http:/, 'ws:');
+      `${base}`.replace(/^https:/, 'wss:').replace(/^http:/, 'ws:');
     if (!wsEndpoint.includes('token=')) {
       wsEndpoint += wsEndpoint.includes('?') ? `&token=${auth.token}` : `?token=${auth.token}`;
     }
@@ -1934,6 +1961,28 @@ export default function ContractDetailsPage({ params }: { params: { id: string }
     const { program } = buildProgram(teeConnection, programId, anchorWallet);
     return { program, programId, connection: teeConnection, anchorWallet, authorityWallet };
   };
+
+  const buildErProgram = async (config: BackendConfig, signerKeypair?: Keypair) => {
+    const authorityWallet = getAnchorWallet(wallet);
+    if (!authorityWallet || !publicKey) {
+      throw new Error('wallet_not_ready');
+    }
+    const programId = new PublicKey(config.programId || PROGRAM_ID_FALLBACK);
+    const rpcEndpoint = config.ephemeralProviderUrl || config.rpcUrl || 'http://localhost:8899';
+    const wsEndpoint = config.ephemeralWsUrl || config.wsUrl || undefined;
+    const erConnection = new Connection(rpcEndpoint, {
+      commitment: 'confirmed',
+      wsEndpoint,
+    });
+    const anchorWallet = signerKeypair ? getKeypairWallet(signerKeypair) : authorityWallet;
+    const { program } = buildProgram(erConnection, programId, anchorWallet);
+    return { program, programId, connection: erConnection, anchorWallet, authorityWallet };
+  };
+
+  const buildPerProgram = async (config: BackendConfig, signerKeypair?: Keypair) =>
+    shouldUseSessionToken
+      ? buildErProgram(config, signerKeypair)
+      : buildTeeProgram(config, signerKeypair);
 
   const sendIxWithSigner = async (connection: Connection, signer: Keypair, ix: TransactionInstruction) => {
     const latest = await connection.getLatestBlockhash();
@@ -1964,12 +2013,6 @@ export default function ContractDetailsPage({ params }: { params: { id: string }
     if (typeof window === 'undefined') return;
     const key = `nebulon_session_signer:${authority}`;
     localStorage.setItem(key, bs58.encode(signer.secretKey));
-  };
-
-  const clearSessionSigner = (authority: string) => {
-    if (typeof window === 'undefined') return;
-    const key = `nebulon_session_signer:${authority}`;
-    localStorage.removeItem(key);
   };
 
   const deriveSessionTokenPda = (
@@ -2058,197 +2101,6 @@ export default function ContractDetailsPage({ params }: { params: { id: string }
       .transaction();
     await provider.sendAndConfirm(tx, [sessionSigner]);
     return { sessionSigner, sessionPda, created: true };
-  };
-
-  const checkSessionStatus = async () => {
-    if (!isLocalnet) {
-      setPerSetupReady(false);
-      setPerSetupChecked(true);
-      return;
-    }
-    if (!publicKey || !backendConfig?.programId) {
-      return;
-    }
-    const authorityWallet = getAnchorWallet(wallet);
-    if (!authorityWallet) {
-      return;
-    }
-    setPerSetupLoading(true);
-    try {
-      const programId = new PublicKey(backendConfig.programId || PROGRAM_ID_FALLBACK);
-      const connection = new Connection(backendConfig.rpcUrl || 'http://localhost:8899', {
-        commitment: 'confirmed',
-        wsEndpoint: backendConfig.wsUrl || undefined,
-      });
-      const provider = new anchor.AnchorProvider(connection, authorityWallet, {
-        commitment: 'confirmed',
-      });
-      const sessionManager = new SessionTokenManager(provider.wallet, provider.connection);
-      const authority = authorityWallet.publicKey;
-      const sessionSigner = loadSessionSigner(authority.toBase58());
-      if (!sessionSigner) {
-        setPerSetupReady(false);
-        setPerSetupChecked(true);
-        return;
-      }
-      const sessionProgramId = sessionManager.program.programId;
-      const sessionPda = deriveSessionTokenPda(
-        sessionProgramId,
-        programId,
-        sessionSigner.publicKey,
-        authority
-      );
-      let existing = null;
-      try {
-        existing = await sessionManager.get(sessionPda);
-      } catch {
-        existing = null;
-      }
-      const now = Math.floor(Date.now() / 1000);
-      const existingUntil = existing?.validUntil ?? existing?.valid_until ?? null;
-      const ready = Boolean(existingUntil && Number(existingUntil) > now + 30);
-      setPerSetupReady(ready);
-      setPerSetupChecked(true);
-    } finally {
-      setPerSetupLoading(false);
-    }
-  };
-
-  const handleDropSession = async () => {
-    if (!isLocalnet || !backendConfig?.programId) {
-      return;
-    }
-    if (!publicKey) {
-      toast({
-        title: 'Wallet required',
-        description: 'Connect your wallet to manage session keys.',
-        variant: 'destructive',
-      });
-      return;
-    }
-    const authorityWallet = getAnchorWallet(wallet);
-    if (!authorityWallet) {
-      return;
-    }
-    setPerSetupLoading(true);
-    try {
-      const programId = new PublicKey(backendConfig.programId || PROGRAM_ID_FALLBACK);
-      const connection = new Connection(backendConfig.rpcUrl || 'http://localhost:8899', {
-        commitment: 'confirmed',
-        wsEndpoint: backendConfig.wsUrl || undefined,
-      });
-      const provider = new anchor.AnchorProvider(connection, authorityWallet, {
-        commitment: 'confirmed',
-      });
-      const sessionManager = new SessionTokenManager(provider.wallet, provider.connection);
-      const authority = authorityWallet.publicKey;
-      const sessionSigner = loadSessionSigner(authority.toBase58());
-      if (!sessionSigner) {
-        setPerSetupReady(false);
-        setPerSetupChecked(true);
-        return;
-      }
-      const sessionProgramId = sessionManager.program.programId;
-      const sessionPda = deriveSessionTokenPda(
-        sessionProgramId,
-        programId,
-        sessionSigner.publicKey,
-        authority
-      );
-      const revokeIx = await sessionManager.program.methods
-        .revokeSession()
-        .accounts({
-          sessionToken: sessionPda,
-          authority,
-          systemProgram: SystemProgram.programId,
-        })
-        .instruction();
-      let latest = cachedBlockhash;
-      if (!latest || Date.now() - latest.fetchedAt > 20000) {
-        const fresh = await connection.getLatestBlockhash();
-        latest = { ...fresh, fetchedAt: Date.now() };
-        setCachedBlockhash(latest);
-      }
-      const tx = new Transaction({
-        feePayer: authorityWallet.publicKey,
-        recentBlockhash: latest.blockhash,
-      }).add(revokeIx);
-      const signed = await authorityWallet.signTransaction(tx);
-      const sig = await connection.sendRawTransaction(signed.serialize());
-      await connection.confirmTransaction(
-        { signature: sig, blockhash: latest.blockhash, lastValidBlockHeight: latest.lastValidBlockHeight },
-        'confirmed'
-      );
-      clearSessionSigner(authority.toBase58());
-      setPerSetupReady(false);
-      setPerSetupChecked(true);
-      toast({
-        title: 'Session dropped',
-        description: 'A new session key will be created next time.',
-        variant: 'success',
-      });
-    } catch (error: any) {
-      toast({
-        title: 'Drop failed',
-        description: error?.message || 'Unable to revoke session key.',
-        variant: 'destructive',
-      });
-    } finally {
-      setPerSetupLoading(false);
-    }
-  };
-
-  const handlePreparePerSession = async () => {
-    if (!contract) return;
-    if (!isLocalnet) {
-      toast({
-        title: 'PER setup not required',
-        description: 'Session keys are only used on localnet.',
-        variant: 'warning',
-      });
-      return;
-    }
-    if (!publicKey) {
-      toast({
-        title: 'Wallet required',
-        description: 'Connect your wallet to prepare PER.',
-        variant: 'destructive',
-      });
-      return;
-    }
-    setPerSetupLoading(true);
-    setPerSetupStep('Checking session');
-    setPerSetupProgress(20);
-    try {
-      const config = backendConfig || (await loadBackendConfig());
-      const programId = new PublicKey(config.programId || PROGRAM_ID_FALLBACK);
-      setPerSetupStep('Creating session key (wallet signature)');
-      setPerSetupProgress(60);
-      const session = await ensureSessionToken(config, programId);
-      setPerSetupStep(session.created ? 'Session created' : 'Session reused');
-      setPerSetupProgress(90);
-      setPerSetupReady(true);
-      setPerSetupStep('PER ready');
-      setPerSetupProgress(100);
-      toast({
-        title: 'PER ready',
-        description: 'Session key is ready for private transactions.',
-        variant: 'success',
-      });
-      setPerSetupChecked(true);
-    } catch (error: any) {
-      toast({
-        title: 'PER setup failed',
-        description: error?.message || 'Unable to prepare PER session.',
-        variant: 'destructive',
-      });
-    } finally {
-      setPerSetupLoading(false);
-      setTimeout(() => {
-        setPerSetupStep(null);
-        setPerSetupProgress(0);
-      }, 1000);
-    }
   };
 
   const fetchEscrowId = async (program: anchor.Program, escrowPda: PublicKey) => {
@@ -2605,7 +2457,7 @@ export default function ContractDetailsPage({ params }: { params: { id: string }
       return;
     }
 
-    setActionLoading(true);
+    setActionLoading({ type: 'sign' });
     const signStart = performance.now();
     console.log('[sign] handleSign: start');
     try {
@@ -2616,7 +2468,15 @@ export default function ContractDetailsPage({ params }: { params: { id: string }
       }
       const mode = (executionMode || contract.execution_mode || 'per').toLowerCase();
       const escrowPda = new PublicKey(contract.escrow_pda);
-      const config = backendConfig || (await loadBackendConfig());
+      const baseConfig = backendConfig || (await loadBackendConfig());
+      const resolvedValidator = await resolveDelegationValidator(baseConfig);
+      const config =
+        resolvedValidator && resolvedValidator.toBase58() !== baseConfig.ephemeralValidatorIdentity
+          ? { ...baseConfig, ephemeralValidatorIdentity: resolvedValidator.toBase58() }
+          : baseConfig;
+      if (config !== baseConfig) {
+        setBackendConfig(config);
+      }
       console.log('[sign] handleSign: loaded config', Math.round(performance.now() - signStart), 'ms');
       const programId = new PublicKey(config.programId || PROGRAM_ID_FALLBACK);
       const connection = new Connection(config.rpcUrl || 'http://localhost:8899', {
@@ -2706,7 +2566,7 @@ export default function ContractDetailsPage({ params }: { params: { id: string }
             description: errorData.error || 'Unknown error',
             variant: 'destructive',
           });
-          setActionLoading(false);
+          setActionLoading(null);
           return;
         }
       }
@@ -2743,7 +2603,7 @@ export default function ContractDetailsPage({ params }: { params: { id: string }
         variant: 'destructive',
       });
     } finally {
-      setActionLoading(false);
+      setActionLoading(null);
     }
   };
 
@@ -2927,12 +2787,12 @@ export default function ContractDetailsPage({ params }: { params: { id: string }
     const config = backendConfig || (await loadBackendConfig());
     let sessionSigner: Keypair | null = null;
     let sessionPda: PublicKey | null = null;
-    if (isLocalnet) {
+    if (shouldUseSessionToken) {
       const session = await ensureSessionToken(config, new PublicKey(config.programId || PROGRAM_ID_FALLBACK));
       sessionSigner = session.sessionSigner;
       sessionPda = session.sessionPda;
     }
-    const { program, programId, connection, anchorWallet } = await buildTeeProgram(config, sessionSigner || undefined);
+    const { program, programId, connection, anchorWallet } = await buildPerProgram(config, sessionSigner || undefined);
     const termsPda = deriveTermsPda(escrowPda, programId);
     const ix = await program.methods
       .signPrivateTerms(new anchor.BN(escrowId.toString()))
@@ -2960,12 +2820,12 @@ export default function ContractDetailsPage({ params }: { params: { id: string }
     const config = backendConfig || (await loadBackendConfig());
     let sessionSigner: Keypair | null = null;
     let sessionPda: PublicKey | null = null;
-    if (isLocalnet) {
+    if (shouldUseSessionToken) {
       const session = await ensureSessionToken(config, new PublicKey(config.programId || PROGRAM_ID_FALLBACK));
       sessionSigner = session.sessionSigner;
       sessionPda = session.sessionPda;
     }
-    const { program, programId, connection, anchorWallet } = await buildTeeProgram(config, sessionSigner || undefined);
+    const { program, programId, connection, anchorWallet } = await buildPerProgram(config, sessionSigner || undefined);
     const termsPda = deriveTermsPda(escrowPda, programId);
     const ix = await program.methods
       .commitTerms(new anchor.BN(escrowId.toString()))
@@ -3024,72 +2884,16 @@ export default function ContractDetailsPage({ params }: { params: { id: string }
     const encryptedBytes = new TextEncoder().encode(encryptedTerms);
     const termsHash = buildTermsHash(deadlineSeconds, paymentBase);
 
-    if (isLocalnet) {
+    let sessionSigner: Keypair | null = null;
+    let sessionPda: PublicKey | null = null;
+    if (shouldUseSessionToken) {
       const session = await ensureSessionToken(config, programId);
-      const sessionSigner = session.sessionSigner;
-      const sessionPda = session.sessionPda;
-      const { program: teeProgram, connection: teeConnection } = await buildTeeProgram(
-        config,
-        sessionSigner
-      );
-
-      const ix = await teeProgram.methods
-        .createPrivateTerms(
-          escrowId,
-          termsHash,
-          new anchor.BN(paymentBase),
-          new anchor.BN(deadlineSeconds),
-          Buffer.from(encryptedBytes)
-        )
-        .accounts({
-          user: publicKey,
-          payer: sessionSigner.publicKey,
-          sessionToken: sessionPda,
-          escrow: escrowPda,
-          terms: termsPda,
-          perVault: perVaultPda,
-          systemProgram: SystemProgram.programId,
-        })
-        .instruction();
-
-      ix.keys = ix.keys.map((key) => {
-        if (key.pubkey.equals(escrowPda) || key.pubkey.equals(termsPda) || key.pubkey.equals(perVaultPda)) {
-          return { ...key, isWritable: true };
-        }
-        return key;
-      });
-
-      const sig = await sendIxWithSigner(teeConnection, sessionSigner, ix);
-      return { sig, usedSession: true };
+      sessionSigner = session.sessionSigner;
+      sessionPda = session.sessionPda;
     }
-
-    if (!signMessage) {
-      throw new Error('wallet_not_ready');
-    }
-
-    const base = normalizeEndpoint(
-      config.ephemeralTeeEndpoint ||
-        config.ephemeralPermissionEndpoint ||
-        'https://tee.magicblock.app'
-    );
-    const auth = await getAuthToken(base, publicKey, (message) => signMessage(message));
-    if (!auth?.token) {
-      throw new Error('tee_token_missing');
-    }
-    const rpcEndpoint = `${base}?token=${auth.token}`;
-    let wsEndpoint =
-      config.ephemeralTeeWsEndpoint ||
-      rpcEndpoint.replace(/^https:/, 'wss:').replace(/^http:/, 'ws:');
-    if (!wsEndpoint.includes('token=')) {
-      wsEndpoint += wsEndpoint.includes('?') ? `&token=${auth.token}` : `?token=${auth.token}`;
-    }
-
-    const teeConnection = new Connection(rpcEndpoint, {
-      commitment: 'confirmed',
-      wsEndpoint,
-    });
-    const { program: teeProgram } = buildProgram(teeConnection, programId, anchorWallet);
-    const sig = await teeProgram.methods
+    const { program: teeProgram, connection: teeConnection, anchorWallet: teeWallet } =
+      await buildPerProgram(config, sessionSigner || undefined);
+    const ix = await teeProgram.methods
       .createPrivateTerms(
         escrowId,
         termsHash,
@@ -3099,17 +2903,24 @@ export default function ContractDetailsPage({ params }: { params: { id: string }
       )
       .accounts({
         user: publicKey,
-        payer: publicKey,
-        sessionToken: null,
+        payer: sessionSigner ? sessionSigner.publicKey : publicKey,
+        sessionToken: sessionPda,
         escrow: escrowPda,
         terms: termsPda,
         perVault: perVaultPda,
         systemProgram: SystemProgram.programId,
       })
-      .signers([])
-      .rpc({ skipPreflight: true });
-
-    return { sig, usedSession: false };
+      .instruction();
+    ix.keys = ix.keys.map((key) => {
+      if (key.pubkey.equals(escrowPda) || key.pubkey.equals(termsPda) || key.pubkey.equals(perVaultPda)) {
+        return { ...key, isWritable: true };
+      }
+      return key;
+    });
+    const sig = sessionSigner
+      ? await sendIxWithSigner(teeConnection, sessionSigner, ix)
+      : await sendIxWithWallet(teeConnection, teeWallet, ix);
+    return { sig, usedSession: Boolean(sessionSigner) };
   };
 
   const handleSubmitTerms = async () => {
@@ -3292,7 +3103,7 @@ export default function ContractDetailsPage({ params }: { params: { id: string }
         currentStep = 'Connecting to TEE';
         let sessionSigner: Keypair | null = null;
         let sessionPda: PublicKey | null = null;
-        if (isLocalnet) {
+        if (shouldUseSessionToken) {
           setMilestoneStep('Creating session key (wallet signature)');
           setMilestoneProgress(90);
           const session = await ensureSessionToken(config, programId);
@@ -3306,7 +3117,7 @@ export default function ContractDetailsPage({ params }: { params: { id: string }
         setMilestoneStep('Submitting private milestone');
         setMilestoneProgress(95);
         const { program: teeProgram, connection: teeConnection, anchorWallet: teeWallet } =
-          await buildTeeProgram(config, sessionSigner || undefined);
+          await buildPerProgram(config, sessionSigner || undefined);
         currentStep = 'Submitting private milestone';
         const ix = await teeProgram.methods
           .createPrivateMilestone(
@@ -3433,7 +3244,7 @@ export default function ContractDetailsPage({ params }: { params: { id: string }
       return;
     }
 
-    setActionLoading(true);
+    setActionLoading({ type: 'markReady', index: milestoneIndex });
     try {
       const config = backendConfig || (await loadBackendConfig());
       const programId = new PublicKey(config.programId || PROGRAM_ID_FALLBACK);
@@ -3472,12 +3283,21 @@ export default function ContractDetailsPage({ params }: { params: { id: string }
       } else {
         let sessionSigner: Keypair | null = null;
         let sessionPda: PublicKey | null = null;
-        if (isLocalnet) {
+        if (shouldUseSessionToken) {
           const session = await ensureSessionToken(config, programId);
           sessionSigner = session.sessionSigner;
           sessionPda = session.sessionPda;
         }
-        const validator = getDelegationValidator(config);
+        const baseConfig = backendConfig || config;
+        const resolvedValidator = await resolveDelegationValidator(baseConfig);
+        const effectiveConfig =
+          resolvedValidator && resolvedValidator.toBase58() !== baseConfig.ephemeralValidatorIdentity
+            ? { ...baseConfig, ephemeralValidatorIdentity: resolvedValidator.toBase58() }
+            : baseConfig;
+        if (effectiveConfig !== baseConfig) {
+          setBackendConfig(effectiveConfig);
+        }
+        const validator = await getDelegationValidator(effectiveConfig);
         const l1Connection = new Connection(config.rpcUrl || 'http://localhost:8899', {
           commitment: 'confirmed',
           wsEndpoint: config.wsUrl || undefined,
@@ -3494,7 +3314,7 @@ export default function ContractDetailsPage({ params }: { params: { id: string }
           config,
           validator
         );
-        const { program: teeProgram } = await buildTeeProgram(config, sessionSigner || undefined);
+        const { program: teeProgram } = await buildPerProgram(effectiveConfig, sessionSigner || undefined);
         sig = await teeProgram.methods
           .updatePrivateMilestoneStatus(
             new anchor.BN(escrowId.toString()),
@@ -3544,7 +3364,7 @@ export default function ContractDetailsPage({ params }: { params: { id: string }
         variant: 'destructive',
       });
     } finally {
-      setActionLoading(false);
+      setActionLoading(null);
     }
   };
 
@@ -3584,7 +3404,7 @@ export default function ContractDetailsPage({ params }: { params: { id: string }
       ],
       async () => {
         setShowConfirmModal(false);
-        setActionLoading(true);
+        setActionLoading({ type: 'confirm', index: milestoneIndex });
         try {
           const config = backendConfig || (await loadBackendConfig());
           const programId = new PublicKey(config.programId || PROGRAM_ID_FALLBACK);
@@ -3623,12 +3443,12 @@ export default function ContractDetailsPage({ params }: { params: { id: string }
       } else {
         let sessionSigner: Keypair | null = null;
         let sessionPda: PublicKey | null = null;
-        if (isLocalnet) {
+        if (shouldUseSessionToken) {
           const session = await ensureSessionToken(config, programId);
           sessionSigner = session.sessionSigner;
           sessionPda = session.sessionPda;
         }
-        const validator = getDelegationValidator(config);
+        const validator = await getDelegationValidator(config);
         const l1Connection = new Connection(config.rpcUrl || 'http://localhost:8899', {
           commitment: 'confirmed',
           wsEndpoint: config.wsUrl || undefined,
@@ -3645,7 +3465,7 @@ export default function ContractDetailsPage({ params }: { params: { id: string }
           config,
           validator
         );
-        const { program: teeProgram } = await buildTeeProgram(config, sessionSigner || undefined);
+        const { program: teeProgram } = await buildPerProgram(config, sessionSigner || undefined);
         sig = await teeProgram.methods
           .updatePrivateMilestoneStatus(
             new anchor.BN(escrowId.toString()),
@@ -3715,12 +3535,12 @@ export default function ContractDetailsPage({ params }: { params: { id: string }
               } else {
                 let sessionSigner: Keypair | null = null;
                 let sessionPda: PublicKey | null = null;
-                if (isLocalnet) {
+                if (shouldUseSessionToken) {
                   const session = await ensureSessionToken(config, programId);
                   sessionSigner = session.sessionSigner;
                   sessionPda = session.sessionPda;
                 }
-                const validator = getDelegationValidator(config);
+                const validator = await getDelegationValidator(config);
                 const l1Connection = new Connection(config.rpcUrl || 'http://localhost:8899', {
                   commitment: 'confirmed',
                   wsEndpoint: config.wsUrl || undefined,
@@ -3739,7 +3559,7 @@ export default function ContractDetailsPage({ params }: { params: { id: string }
                     validator
                   );
                 }
-                const { program: teeProgram } = await buildTeeProgram(config, sessionSigner || undefined);
+                const { program: teeProgram } = await buildPerProgram(config, sessionSigner || undefined);
                 const readySig = await teeProgram.methods
                   .setReadyToClaim(new anchor.BN(escrowId.toString()), milestoneCount)
                   .accounts({
@@ -3822,7 +3642,7 @@ export default function ContractDetailsPage({ params }: { params: { id: string }
             variant: 'destructive',
           });
         } finally {
-          setActionLoading(false);
+          setActionLoading(null);
         }
       }
     );
@@ -3876,7 +3696,7 @@ export default function ContractDetailsPage({ params }: { params: { id: string }
       ['This will open a dispute for this contract.'],
       async () => {
         setShowConfirmModal(false);
-        setActionLoading(true);
+        setActionLoading({ type: 'dispute' });
         try {
           const config = backendConfig || (await loadBackendConfig());
           const anchorWallet = getAnchorWallet(wallet);
@@ -3890,6 +3710,44 @@ export default function ContractDetailsPage({ params }: { params: { id: string }
           });
           const { program } = buildProgram(connection, programId, anchorWallet);
           const escrowPda = new PublicKey(contract.escrow_pda);
+          let escrowInfo = await connection.getAccountInfo(escrowPda, 'confirmed');
+          if (escrowInfo && escrowInfo.owner.equals(DELEGATION_PROGRAM_ID)) {
+            try {
+              let sessionSigner: Keypair | null = null;
+              if (shouldUseSessionToken) {
+                const session = await ensureSessionToken(config, programId);
+                sessionSigner = session.sessionSigner;
+              }
+              const { program: perProgram } = await buildPerProgram(config, sessionSigner || undefined);
+              await perProgram.methods
+                .undelegateEscrow()
+                .accounts({
+                  payer: sessionSigner ? sessionSigner.publicKey : publicKey,
+                  escrow: escrowPda,
+                  magicProgram: MAGIC_PROGRAM_ID,
+                  magicContext: MAGIC_CONTEXT_ID,
+                })
+                .signers(sessionSigner ? [sessionSigner] : [])
+                .rpc({ skipPreflight: true });
+              escrowInfo = await connection.getAccountInfo(escrowPda, 'confirmed');
+            } catch (error) {
+              console.error('Error undelegating escrow before dispute:', error);
+              toast({
+                title: 'Escrow is delegated',
+                description: 'Unable to undelegate escrow. Run sync before disputing.',
+                variant: 'warning',
+              });
+              return;
+            }
+          }
+          if (escrowInfo && escrowInfo.owner.equals(DELEGATION_PROGRAM_ID)) {
+            toast({
+              title: 'Escrow is delegated',
+              description: 'Run sync to undelegate before disputing.',
+              variant: 'warning',
+            });
+            return;
+          }
           const escrowId = await fetchEscrowId(program, escrowPda);
           const disputePda = deriveDisputePda(escrowPda, programId);
 
@@ -3924,14 +3782,14 @@ export default function ContractDetailsPage({ params }: { params: { id: string }
             variant: 'destructive',
           });
         } finally {
-          setActionLoading(false);
+          setActionLoading(null);
         }
       }
     );
   };
 
   const handleResolveDispute = async () => {
-    setActionLoading(true);
+    setActionLoading({ type: 'resolveDispute' });
     try {
       // This is a placeholder for the actual dispute resolution logic
       // In reality, this would involve:
@@ -3948,7 +3806,7 @@ export default function ContractDetailsPage({ params }: { params: { id: string }
       console.error('Error resolving dispute:', error);
       alert('Failed to resolve dispute');
     } finally {
-      setActionLoading(false);
+      setActionLoading(null);
     }
   };
 
@@ -3978,7 +3836,7 @@ export default function ContractDetailsPage({ params }: { params: { id: string }
       return;
     }
 
-    setActionLoading(true);
+    setActionLoading({ type: 'claim' });
     try {
       const token = localStorage.getItem('authToken');
       const anchorWallet = getAnchorWallet(wallet);
@@ -3993,6 +3851,44 @@ export default function ContractDetailsPage({ params }: { params: { id: string }
       });
       const { program } = buildProgram(connection, programId, anchorWallet);
       const escrowPda = new PublicKey(contract.escrow_pda);
+      let escrowInfo = await connection.getAccountInfo(escrowPda, 'confirmed');
+      if (escrowInfo && escrowInfo.owner.equals(DELEGATION_PROGRAM_ID)) {
+        try {
+          let sessionSigner: Keypair | null = null;
+          if (shouldUseSessionToken) {
+            const session = await ensureSessionToken(config, programId);
+            sessionSigner = session.sessionSigner;
+          }
+          const { program: perProgram } = await buildPerProgram(config, sessionSigner || undefined);
+          await perProgram.methods
+            .undelegateEscrow()
+            .accounts({
+              payer: sessionSigner ? sessionSigner.publicKey : publicKey,
+              escrow: escrowPda,
+              magicProgram: MAGIC_PROGRAM_ID,
+              magicContext: MAGIC_CONTEXT_ID,
+            })
+            .signers(sessionSigner ? [sessionSigner] : [])
+            .rpc({ skipPreflight: true });
+          escrowInfo = await connection.getAccountInfo(escrowPda, 'confirmed');
+        } catch (error) {
+          console.error('Error undelegating escrow before claiming:', error);
+          toast({
+            title: 'Escrow is delegated',
+            description: 'Unable to undelegate escrow. Run sync before claiming.',
+            variant: 'warning',
+          });
+          return;
+        }
+      }
+      if (escrowInfo && escrowInfo.owner.equals(DELEGATION_PROGRAM_ID)) {
+        toast({
+          title: 'Escrow is delegated',
+          description: 'Run sync to undelegate before claiming.',
+          variant: 'warning',
+        });
+        return;
+      }
       const escrowState: any = await program.account.escrow.fetch(escrowPda);
 
       const paidOut = Boolean(escrowState?.paidOut ?? escrowState?.paid_out);
@@ -4072,13 +3968,13 @@ export default function ContractDetailsPage({ params }: { params: { id: string }
         fundedRaw?.toString?.() || String(fundedRaw)
       );
 
-      setActionLoading(false);
+      setActionLoading(null);
       openConfirmModal(
         'Claim funds',
         [`Amount: ${amountLabel} USDC`],
         async () => {
           setShowConfirmModal(false);
-          setActionLoading(true);
+          setActionLoading({ type: 'claim' });
           const sig = await sendIxsWithWallet(connection, anchorWallet, instructions);
           toast({
             title: 'Funds claimed',
@@ -4096,6 +3992,7 @@ export default function ContractDetailsPage({ params }: { params: { id: string }
             } catch {}
           }
           await fetchContractDetails();
+          setContract((prev) => (prev ? { ...prev, status: 'completed' } : prev));
         }
       );
     } catch (error) {
@@ -4106,7 +4003,7 @@ export default function ContractDetailsPage({ params }: { params: { id: string }
         variant: 'destructive',
       });
     } finally {
-      setActionLoading(false);
+      setActionLoading(null);
     }
   };
 
@@ -4170,7 +4067,36 @@ export default function ContractDetailsPage({ params }: { params: { id: string }
       });
       const { program } = buildProgram(connection, programId, anchorWallet);
       const escrowPda = new PublicKey(contract.escrow_pda);
-      const escrowInfo = await connection.getAccountInfo(escrowPda, 'confirmed');
+      let escrowInfo = await connection.getAccountInfo(escrowPda, 'confirmed');
+      if (escrowInfo && escrowInfo.owner.equals(DELEGATION_PROGRAM_ID)) {
+        try {
+          let sessionSigner: Keypair | null = null;
+          if (shouldUseSessionToken) {
+            const session = await ensureSessionToken(config, programId);
+            sessionSigner = session.sessionSigner;
+          }
+          const { program: perProgram } = await buildPerProgram(config, sessionSigner || undefined);
+          await perProgram.methods
+            .undelegateEscrow()
+            .accounts({
+              payer: sessionSigner ? sessionSigner.publicKey : publicKey,
+              escrow: escrowPda,
+              magicProgram: MAGIC_PROGRAM_ID,
+              magicContext: MAGIC_CONTEXT_ID,
+            })
+            .signers(sessionSigner ? [sessionSigner] : [])
+            .rpc({ skipPreflight: true });
+          escrowInfo = await connection.getAccountInfo(escrowPda, 'confirmed');
+        } catch (error) {
+          console.error('Error undelegating escrow before funding:', error);
+          toast({
+            title: 'Escrow is delegated',
+            description: 'Unable to undelegate escrow. Run sync before funding.',
+            variant: 'warning',
+          });
+          return;
+        }
+      }
       if (escrowInfo && escrowInfo.owner.equals(DELEGATION_PROGRAM_ID)) {
         toast({
           title: 'Escrow is delegated',
@@ -4256,13 +4182,13 @@ export default function ContractDetailsPage({ params }: { params: { id: string }
         instructions.push(fundingOkIx);
       }
 
-      setActionLoading(false);
+      setActionLoading(null);
       openConfirmModal(
         'Confirm funding',
         buildFeeConfirmLines(amountBase, 'funding'),
         async () => {
         setShowConfirmModal(false);
-        setActionLoading(true);
+        setActionLoading({ type: 'fund' });
         const sig = await sendIxsWithWallet(connection, anchorWallet, instructions);
         const trimmedTx = `${sig.slice(0, 4)}...${sig.slice(-4)}`;
         toast({
@@ -4300,7 +4226,7 @@ export default function ContractDetailsPage({ params }: { params: { id: string }
         }
 
         await fetchContractDetails();
-        setActionLoading(false);
+        setActionLoading(null);
       },
       { ticket: buildFeeTicket(amountBase) }
       );
@@ -4311,7 +4237,11 @@ export default function ContractDetailsPage({ params }: { params: { id: string }
         description: 'Unable to fund contract.',
         variant: 'destructive',
       });
-      setActionLoading(false);
+      setActionLoading(null);
+    } finally {
+      if (actionLoading?.type === 'fund') {
+        setActionLoading(null);
+      }
     }
   };
 
@@ -4436,8 +4366,15 @@ export default function ContractDetailsPage({ params }: { params: { id: string }
                 <p className="text-white font-medium break-all">{contract.id}</p>
               </div>
               <div>
-                <label className="text-xs text-gray-500 uppercase tracking-wide">Execution Mode</label>
-                <p className="text-white font-medium">{contract.execution_mode.toUpperCase()}</p>
+                <label className="text-xs text-gray-500 uppercase tracking-wide">Escrow Address</label>
+                <button
+                  type="button"
+                  onClick={() => handleCopyAddress(contract.escrow_pda)}
+                  className="block text-left text-white font-medium hover:text-brand-300 transition-colors"
+                  title={contract.escrow_pda || undefined}
+                >
+                  {trimAddress(contract.escrow_pda)}
+                </button>
               </div>
               <div>
                 <label className="text-xs text-gray-500 uppercase tracking-wide">Created At</label>
@@ -4535,56 +4472,6 @@ export default function ContractDetailsPage({ params }: { params: { id: string }
             </div>
           </div>
 
-          {/* Session Keys */}
-          {!['ready_to_claim', 'completed'].includes(contract.status) &&
-            executionMode !== 'l1' &&
-            contract.execution_mode !== 'l1' && (
-          <div className="glass-panel rounded-xl border border-white/5 p-6 mb-8">
-            <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-              <div>
-                <h2 className="text-xl font-semibold text-white">Session Keys</h2>
-                <p className="text-xs text-gray-400 mt-1">
-                  Manage session keys to reduce wallet prompts for private actions.
-                </p>
-              </div>
-              <span
-                className={`px-2 py-1 rounded-full text-[11px] font-semibold ${
-                  perSetupReady ? 'bg-emerald-500/15 text-emerald-300' : 'bg-gray-500/15 text-gray-300'
-                }`}
-              >
-                {perSetupReady ? 'Ready' : perSetupChecked ? 'Not ready' : 'Unknown'}
-              </span>
-            </div>
-
-            <div className="mt-4 flex flex-wrap items-center gap-3">
-              <button
-                onClick={checkSessionStatus}
-                disabled={perSetupLoading || !isLocalnet}
-                className="inline-flex items-center justify-center gap-2 bg-white/5 hover:bg-white/10 disabled:bg-gray-600 disabled:cursor-not-allowed text-white px-4 py-2 rounded-lg text-sm font-medium transition-all"
-              >
-                {perSetupLoading ? 'Checking...' : 'Check Status'}
-              </button>
-              {!perSetupReady && (
-                <button
-                  onClick={handlePreparePerSession}
-                  disabled={perSetupLoading || !isLocalnet}
-                  className="inline-flex items-center justify-center gap-2 bg-brand-500 hover:bg-brand-600 disabled:bg-gray-600 disabled:cursor-not-allowed text-white px-4 py-2 rounded-lg text-sm font-medium transition-all"
-                >
-                  Prepare Session
-                </button>
-              )}
-              {!isLocalnet && (
-                <span className="text-xs text-gray-500">Session keys are only used on localnet.</span>
-              )}
-              {isLocalnet && (
-                <span className="text-xs text-gray-500">
-                  {perSetupReady ? 'Session key is valid.' : 'Run once per device.'}
-                </span>
-              )}
-            </div>
-          </div>
-          )}
-
           {/* Terms and Milestones */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-8 mb-8">
             {/* Terms */}
@@ -4664,7 +4551,7 @@ export default function ContractDetailsPage({ params }: { params: { id: string }
 
                   <button
                     onClick={handleSubmitTerms}
-                    disabled={!canSubmitTerms || submittingTerms || actionLoading}
+                    disabled={!canSubmitTerms || submittingTerms || isAnyActionLoading}
                     className="w-full bg-brand-500 hover:bg-brand-600 disabled:bg-gray-600 disabled:cursor-not-allowed text-white px-4 py-2 rounded-lg text-sm font-medium transition-all"
                   >
                     {submittingTerms ? 'Submitting terms...' : 'Submit Terms'}
@@ -4697,7 +4584,7 @@ export default function ContractDetailsPage({ params }: { params: { id: string }
                   {contract?.status === 'negotiating' && (
                     <button
                       onClick={() => setShowMilestoneModal(true)}
-                      disabled={milestoneSaving || actionLoading}
+                      disabled={milestoneSaving || isAnyActionLoading}
                       className="text-xs font-semibold text-brand-300 hover:text-brand-200 disabled:text-gray-500 disabled:cursor-not-allowed"
                     >
                       + Add milestone
@@ -4737,12 +4624,12 @@ export default function ContractDetailsPage({ params }: { params: { id: string }
                           {milestone.status === 2 ? 'Confirmed' : milestone.status === 1 ? 'Marked as ready' : 'Pending'}
                         </span>
                       </div>
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <p className="text-gray-300 text-sm">{milestone.details}</p>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <p className="flex-1 text-gray-300 text-sm">{milestone.details}</p>
                         {milestone.status === 1 && canConfirm && (
                           <button
                             onClick={() => handleConfirmMilestone(milestone.index)}
-                            disabled={actionLoading}
+                            disabled={isAnyActionLoading}
                             className="inline-flex items-center gap-2 rounded-full border border-emerald-500/30 bg-emerald-500/15 px-4 py-1.5 text-xs font-semibold text-emerald-200 hover:bg-emerald-500/25 hover:text-white disabled:cursor-not-allowed disabled:opacity-60"
                           >
                             <iconify-icon icon="solar:check-circle-linear" width="14" />
@@ -4756,17 +4643,16 @@ export default function ContractDetailsPage({ params }: { params: { id: string }
                         </p>
                       )}
                       {milestone.status === 0 && canSubmit && (
-                        <button
-                          onClick={() => handleMarkMilestoneReady(milestone.index)}
-                          disabled={actionLoading}
-                          className="mt-3 inline-flex items-center gap-2 rounded-full border border-brand-500/30 bg-brand-500/15 px-3.5 py-1.5 text-xs font-semibold text-brand-200 hover:bg-brand-500/25 hover:text-white disabled:cursor-not-allowed disabled:opacity-60"
-                        >
-                          <iconify-icon icon="solar:upload-linear" width="14" />
-                          Mark Ready
-                        </button>
-                      )}
-                      {milestone.status === 1 && !canConfirm && (
-                        <p className="mt-3 text-xs text-gray-500">Awaiting client confirmation.</p>
+                        <div className="mt-3 flex justify-end">
+                          <button
+                            onClick={() => handleMarkMilestoneReady(milestone.index)}
+                            disabled={isAnyActionLoading}
+                            className="inline-flex items-center gap-2 rounded-full border border-brand-500/30 bg-brand-500/15 px-3.5 py-1.5 text-xs font-semibold text-brand-200 hover:bg-brand-500/25 hover:text-white disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            <iconify-icon icon="solar:upload-linear" width="14" />
+                            Mark Ready
+                          </button>
+                        </div>
                       )}
                       {milestone.status === 1 && !canConfirm && (
                         <p className="mt-3 text-xs text-gray-500">Awaiting client confirmation.</p>
@@ -4781,83 +4667,6 @@ export default function ContractDetailsPage({ params }: { params: { id: string }
               )}
             </div>
           </div>
-
-          {/* Execution Mode */}
-          {!contract.escrow_pda && (
-            <div className="glass-panel rounded-xl border border-white/5 p-6">
-              <h2 className="text-xl font-semibold text-white mb-4">Execution Mode</h2>
-              <div className="flex flex-col gap-4">
-                <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-                  <div>
-                    <p className="text-sm text-gray-300">Privacy & enforcement</p>
-                      <p className="text-xs text-gray-500">
-                        PER keeps terms private (requires MagicBlock TEE). L1 is public, but extremely slow and unreliable in browser; CLI usage is recommended.
-                      </p>
-                    <p className="text-xs text-gray-500 mt-1">
-                      Network: {network === 'unknown' ? 'unknown' : network.toUpperCase()}
-                    </p>
-                  </div>
-                  <div className="inline-flex items-center rounded-full border border-white/10 bg-white/5 p-1">
-                    <button
-                      onClick={() => handleModeSelect('per')}
-                      disabled={modeUpdating || perDisabled}
-                      className={`px-4 py-2 rounded-full text-xs font-semibold transition-all ${
-                        executionMode === 'per'
-                          ? 'bg-brand-500 text-white shadow-[0_0_10px_rgba(110,86,207,0.4)]'
-                          : 'text-gray-300 hover:text-white'
-                      } ${perDisabled ? 'opacity-50 cursor-not-allowed' : ''}`}
-                    >
-                      PER
-                    </button>
-                    <button
-                      onClick={() => handleModeSelect('l1')}
-                      disabled={modeUpdating || !canSelectL1}
-                      className={`px-4 py-2 rounded-full text-xs font-semibold transition-all ${
-                        executionMode === 'l1'
-                          ? 'bg-orange-500 text-white shadow-[0_0_10px_rgba(255,153,102,0.4)]'
-                          : 'text-gray-300 hover:text-white'
-                      } ${!canSelectL1 ? 'opacity-50 cursor-not-allowed' : ''}`}
-                    >
-                      L1
-                    </button>
-                  </div>
-                </div>
-
-                <div className="flex flex-wrap items-center gap-2 text-xs text-gray-400">
-                  <span>
-                    TEE: {teeStatus === 'checking'
-                      ? 'checking...'
-                      : teeStatus === 'available'
-                        ? 'available'
-                        : teeStatus === 'unavailable'
-                          ? 'unavailable'
-                          : 'unknown'}
-                  </span>
-                  <button
-                    onClick={handleTeeCheck}
-                    disabled={teeStatus === 'checking' || isLocalnet}
-                    className="px-2 py-1 rounded-full border border-white/15 hover:border-white/30 transition-all"
-                  >
-                    Check TEE
-                  </button>
-                  {isLocalnet && (
-                    <span className="text-gray-500">Localnet supports PER or L1.</span>
-                  )}
-                  {!signMessage && (
-                    <span className="text-amber-300">Wallet lacks signMessage; TEE auth may fail.</span>
-                  )}
-                </div>
-
-                {isDevnet && teeStatus === 'unavailable' && (
-                  <div className="text-xs text-amber-300">
-                    {executionMode === 'l1'
-                      ? 'MagicBlock TEE is currently unavailable. L1 mode is enabled (public, but always works on-chain). Browser performance can be very slow; CLI usage is recommended.'
-                      : 'MagicBlock PER (TEE) is not accessible right now. PER actions may fail; L1 is safer. Browser performance can be very slow, so CLI usage is recommended.'}
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
 
           {/* Contract Actions */}
           <div className="glass-panel rounded-xl border border-white/5 p-6 mt-6">
@@ -4876,10 +4685,10 @@ export default function ContractDetailsPage({ params }: { params: { id: string }
                 <div className="md:col-span-3 flex justify-center">
                   <button
                     onClick={handleInit}
-                    disabled={actionLoading}
+                    disabled={isAnyActionLoading}
                     className="inline-flex items-center justify-center gap-2 bg-brand-500 hover:bg-brand-600 disabled:bg-gray-600 disabled:cursor-not-allowed text-white px-6 py-3 rounded-lg font-medium transition-all shadow-[0_0_15px_rgba(110,86,207,0.4)] hover:scale-105 active:scale-95"
                   >
-                    {actionLoading ? (
+                    {isActionLoading('init') ? (
                       <>
                         <div className="w-4 h-4 border border-current border-t-transparent rounded-full animate-spin inline-block mr-2" />
                         Initializing...
@@ -4902,7 +4711,7 @@ export default function ContractDetailsPage({ params }: { params: { id: string }
                 ) : (
                   <div
                     onClick={() => {
-                      if (actionLoading || canSignContract) return;
+                      if (isAnyActionLoading || canSignContract) return;
                       const missing = [];
                       if (!milestones.length) missing.push('At least 1 milestone');
                       if (!terms) missing.push('Set terms');
@@ -4916,10 +4725,10 @@ export default function ContractDetailsPage({ params }: { params: { id: string }
                   >
                     <button
                       onClick={handleSign}
-                      disabled={actionLoading || !canSignContract}
+                      disabled={isAnyActionLoading || !canSignContract}
                       className="inline-flex items-center justify-center gap-2 bg-brand-500 hover:bg-brand-600 disabled:bg-gray-600 disabled:cursor-not-allowed text-white px-6 py-3 rounded-lg font-medium transition-all shadow-[0_0_15px_rgba(110,86,207,0.4)] hover:scale-105 active:scale-95"
                     >
-                      {actionLoading ? (
+                      {isActionLoading('sign') ? (
                         <>
                           <div className="w-4 h-4 border border-current border-t-transparent rounded-full animate-spin inline-block mr-2" />
                           Signing...
@@ -4939,10 +4748,10 @@ export default function ContractDetailsPage({ params }: { params: { id: string }
                 isClient ? (
                   <button
                     onClick={handleFund}
-                    disabled={actionLoading}
+                    disabled={isAnyActionLoading}
                     className="md:col-span-3 mx-auto inline-flex items-center justify-center gap-2 bg-brand-500 hover:bg-brand-600 disabled:bg-gray-600 disabled:cursor-not-allowed text-white px-6 py-3 rounded-lg font-medium transition-all shadow-[0_0_15px_rgba(110,86,207,0.4)] hover:scale-105 active:scale-95"
                   >
-                    {actionLoading ? (
+                    {isActionLoading('fund') ? (
                       <>
                         <div className="w-4 h-4 border border-current border-t-transparent rounded-full animate-spin inline-block mr-2" />
                         Funding...
@@ -4965,10 +4774,10 @@ export default function ContractDetailsPage({ params }: { params: { id: string }
                 <div className="md:col-span-3 flex justify-center">
                   <button
                     onClick={handleOpenDispute}
-                    disabled={actionLoading}
+                    disabled={isAnyActionLoading}
                     className="inline-flex items-center justify-center gap-2 bg-red-500/20 hover:bg-red-500/30 disabled:bg-gray-600 disabled:cursor-not-allowed text-red-200 px-6 py-3 rounded-lg font-medium transition-all shadow-[0_0_15px_rgba(239,68,68,0.25)] hover:scale-105 active:scale-95"
                   >
-                    {actionLoading ? (
+                    {isActionLoading('dispute') ? (
                       <>
                         <div className="w-4 h-4 border border-current border-t-transparent rounded-full animate-spin inline-block mr-2" />
                         Opening dispute...
@@ -4982,15 +4791,15 @@ export default function ContractDetailsPage({ params }: { params: { id: string }
                   </button>
                 </div>
               )}
-              {contract.status === 'ready_to_claim' && (
+              {(contract.status === 'ready_to_claim' || allMilestonesConfirmed) && contract.status !== 'completed' && (
                 isContractor ? (
                   <div className="md:col-span-3 flex justify-center">
                     <button
                       onClick={handleClaimFunds}
-                      disabled={actionLoading}
+                      disabled={isAnyActionLoading}
                       className="inline-flex items-center justify-center gap-2 bg-emerald-500 hover:bg-emerald-600 disabled:bg-gray-600 disabled:cursor-not-allowed text-white px-6 py-3 rounded-lg font-medium transition-all shadow-[0_0_15px_rgba(16,185,129,0.35)] hover:scale-105 active:scale-95"
                     >
-                      {actionLoading ? (
+                      {isActionLoading('claim') ? (
                         <>
                           <div className="w-4 h-4 border border-current border-t-transparent rounded-full animate-spin inline-block mr-2" />
                           Claiming...

@@ -165,6 +165,9 @@ const getEphemeralProgram = async (config, signerKeypair, options = {}) => {
 const getDelegationValidator = async (config) => {
   const endpoint = (config.ephemeralProviderUrl || "").toLowerCase();
   const wsEndpoint = (config.ephemeralWsUrl || "").toLowerCase();
+  if (config && config.__verbose) {
+    console.log("DEBUG: delegation resolver endpoints", { endpoint, wsEndpoint });
+  }
   if (endpoint.includes("localhost") || endpoint.includes("127.0.0.1")) {
     return LOCAL_VALIDATOR_IDENTITY;
   }
@@ -185,6 +188,9 @@ const getDelegationValidator = async (config) => {
   if (shouldUseRouter && config.ephemeralProviderUrl) {
     const cacheKey = `${endpoint}|${wsEndpoint}`;
     if (cachedValidator && cachedValidatorEndpoint === cacheKey) {
+      if (config && config.__verbose) {
+        console.log("DEBUG: using cached validator", cachedValidator.toBase58());
+      }
       return cachedValidator;
     }
     try {
@@ -193,7 +199,7 @@ const getDelegationValidator = async (config) => {
       });
       const closest = await router.getClosestValidator();
       if (config && config.__verbose) {
-        console.log("Router closest:", JSON.stringify(closest));
+        console.log("DEBUG: router closest validator:", closest);
       }
       const identity =
         closest?.validatorIdentity || closest?.identity || closest?.validator;
@@ -209,7 +215,13 @@ const getDelegationValidator = async (config) => {
   }
   const fallback = safePublicKey(config.ephemeralValidatorIdentity);
   if (fallback) {
+    if (config && config.__verbose) {
+      console.log("DEBUG: using configured validator identity", fallback.toBase58());
+    }
     return fallback;
+  }
+  if (config && config.__verbose) {
+    console.warn("DEBUG: no validator identity resolved.");
   }
   return null;
 };
@@ -1067,6 +1079,13 @@ const ensureDelegatedAccount = async (
   options
 ) => {
   const info = await program.provider.connection.getAccountInfo(pda, "confirmed");
+  if (isVerbose(options)) {
+    console.log("DEBUG: delegation check", {
+      pda: pda.toBase58(),
+      owner: info?.owner?.toBase58?.(),
+      delegated: Boolean(info && info.owner.equals(DELEGATION_PROGRAM_ID)),
+    });
+  }
   if (info && info.owner.equals(DELEGATION_PROGRAM_ID)) {
     if (isVerbose(options)) {
       console.log(`Delegation already active for ${pda.toBase58()}; skipping.`);
@@ -1124,6 +1143,13 @@ const ensureDelegatedEscrow = async (
     escrowPda,
     "confirmed"
   );
+  if (isVerbose(options)) {
+    console.log("DEBUG: escrow delegation check", {
+      escrow: escrowPda.toBase58(),
+      owner: info?.owner?.toBase58?.(),
+      delegated: Boolean(info && info.owner.equals(DELEGATION_PROGRAM_ID)),
+    });
+  }
   if (info && info.owner.equals(DELEGATION_PROGRAM_ID)) {
     if (isVerbose(options)) {
       console.log(`Delegation already active for ${escrowPda.toBase58()}; skipping.`);
@@ -2210,6 +2236,27 @@ const runSignContract = async (config, contract, options) => {
   }
 
   console.log("Processing.");
+  if (isVerbose(options)) {
+    console.log("DEBUG: PER config", {
+      ephemeralProviderUrl: config.ephemeralProviderUrl,
+      ephemeralWsUrl: config.ephemeralWsUrl,
+      ephemeralValidatorIdentity: config.ephemeralValidatorIdentity,
+      rpcUrl: config.rpcUrl,
+      wsUrl: config.wsUrl,
+      network: config.network,
+    });
+    try {
+      if (config.ephemeralProviderUrl) {
+        const router = new ConnectionMagicRouter(config.ephemeralProviderUrl, {
+          wsEndpoint: config.ephemeralWsUrl || undefined,
+        });
+        const closest = await router.getClosestValidator();
+        console.log("DEBUG: router closest validator (sign flow):", closest);
+      }
+    } catch (error) {
+      console.log("DEBUG: router closest validator lookup failed:", error?.message || error);
+    }
+  }
   logProgress("Submitting signature on ER");
   let signSig = null;
   let commitSig = null;
@@ -2228,17 +2275,26 @@ const runSignContract = async (config, contract, options) => {
       programId,
       program.provider
     );
-  signSig = await erProgram.methods
-    .signPrivateTerms(new anchor.BN(escrowId.toString()))
-    .accounts({
-      user: keypair.publicKey,
-      payer: sessionSigner.publicKey,
-      sessionToken: sessionPda,
-      escrow: escrowPda,
-      terms: termsPda,
-    })
-    .signers([sessionSigner])
-    .rpc({ skipPreflight: true });
+  try {
+    signSig = await erProgram.methods
+      .signPrivateTerms(new anchor.BN(escrowId.toString()))
+      .accounts({
+        user: keypair.publicKey,
+        payer: sessionSigner.publicKey,
+        sessionToken: sessionPda,
+        escrow: escrowPda,
+        terms: termsPda,
+      })
+      .signers([sessionSigner])
+      .rpc({ skipPreflight: true });
+  } catch (error) {
+    console.error("ERROR: signPrivateTerms failed:", error?.message || error);
+    const msg = (error?.message || "").toLowerCase();
+    if (msg.includes("invalidwritableaccount")) {
+      console.error("HINT: InvalidWritableAccount usually means validator mismatch. Run with --verbose and compare router validator vs delegation.");
+    }
+    throw error;
+  }
   logTx("Signature submitted.", signSig, true);
   try {
     logProgress("Committing terms on ER");

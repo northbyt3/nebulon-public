@@ -386,14 +386,14 @@ export default function NewContractPage() {
         </label>
 
         <div className="space-y-3">
-          <label className="flex items-center gap-3 p-4 bg-dark-800 border border-white/10 rounded-lg cursor-pointer hover:border-brand-500/50 transition-colors">
+          <label className="group flex items-center gap-3 p-4 bg-dark-800 border border-white/10 rounded-lg cursor-pointer hover:border-brand-500/50 transition-colors">
             <input
               type="radio"
               name="role"
               value="client"
               checked={formData.role === 'client'}
               onChange={(e) => handleInputChange('role', e.target.value)}
-              className="text-brand-500 focus:ring-brand-500"
+              className="h-4 w-4 appearance-none rounded-full border border-white/20 bg-dark-900/60 transition-colors focus:outline-none focus:ring-2 focus:ring-brand-500/40 checked:border-brand-500 checked:bg-white checked:shadow-[0_0_8px_rgba(110,86,207,0.6)]"
             />
             <div className="flex-1">
               <div className="font-medium text-white">Client</div>
@@ -401,14 +401,14 @@ export default function NewContractPage() {
             </div>
           </label>
 
-          <label className="flex items-center gap-3 p-4 bg-dark-800 border border-white/10 rounded-lg cursor-pointer hover:border-brand-500/50 transition-colors">
+          <label className="group flex items-center gap-3 p-4 bg-dark-800 border border-white/10 rounded-lg cursor-pointer hover:border-brand-500/50 transition-colors">
             <input
               type="radio"
               name="role"
               value="contractor"
               checked={formData.role === 'contractor'}
               onChange={(e) => handleInputChange('role', e.target.value)}
-              className="text-brand-500 focus:ring-brand-500"
+              className="h-4 w-4 appearance-none rounded-full border border-white/20 bg-dark-900/60 transition-colors focus:outline-none focus:ring-2 focus:ring-brand-500/40 checked:border-brand-500 checked:bg-white checked:shadow-[0_0_8px_rgba(110,86,207,0.6)]"
             />
             <div className="flex-1">
               <div className="font-medium text-white">Contractor</div>
@@ -431,14 +431,14 @@ export default function NewContractPage() {
       </div>
 
       <div className="space-y-3">
-        <label className="flex items-center gap-3 p-4 bg-dark-800 border border-white/10 rounded-lg cursor-pointer hover:border-brand-500/50 transition-colors">
+        <label className="group flex items-center gap-3 p-4 bg-dark-800 border border-white/10 rounded-lg cursor-pointer hover:border-brand-500/50 transition-colors">
           <input
             type="radio"
             name="shareMethod"
             value="direct"
             checked={shareMethod === 'direct'}
             onChange={() => setShareMethod('direct')}
-            className="text-brand-500 focus:ring-brand-500"
+            className="h-4 w-4 appearance-none rounded-full border border-white/20 bg-dark-900/60 transition-colors focus:outline-none focus:ring-2 focus:ring-brand-500/40 checked:border-brand-500 checked:bg-white checked:shadow-[0_0_8px_rgba(110,86,207,0.6)]"
           />
           <div className="flex-1">
             <div className="font-medium text-white">Directly by Nebulon ID</div>
@@ -446,14 +446,14 @@ export default function NewContractPage() {
           </div>
         </label>
 
-        <label className="flex items-center gap-3 p-4 bg-dark-800 border border-white/10 rounded-lg cursor-pointer hover:border-brand-500/50 transition-colors">
+        <label className="group flex items-center gap-3 p-4 bg-dark-800 border border-white/10 rounded-lg cursor-pointer hover:border-brand-500/50 transition-colors">
           <input
             type="radio"
             name="shareMethod"
             value="url"
             checked={shareMethod === 'url'}
             onChange={() => setShareMethod('url')}
-            className="text-brand-500 focus:ring-brand-500"
+            className="h-4 w-4 appearance-none rounded-full border border-white/20 bg-dark-900/60 transition-colors focus:outline-none focus:ring-2 focus:ring-brand-500/40 checked:border-brand-500 checked:bg-white checked:shadow-[0_0_8px_rgba(110,86,207,0.6)]"
           />
           <div className="flex-1">
             <div className="font-medium text-white">Generate URL</div>
@@ -461,14 +461,14 @@ export default function NewContractPage() {
           </div>
         </label>
 
-        <label className="flex items-center gap-3 p-4 bg-dark-800 border border-white/10 rounded-lg cursor-pointer hover:border-brand-500/50 transition-colors">
+        <label className="group flex items-center gap-3 p-4 bg-dark-800 border border-white/10 rounded-lg cursor-pointer hover:border-brand-500/50 transition-colors">
           <input
             type="radio"
             name="shareMethod"
             value="code"
             checked={shareMethod === 'code'}
             onChange={() => setShareMethod('code')}
-            className="text-brand-500 focus:ring-brand-500"
+            className="h-4 w-4 appearance-none rounded-full border border-white/20 bg-dark-900/60 transition-colors focus:outline-none focus:ring-2 focus:ring-brand-500/40 checked:border-brand-500 checked:bg-white checked:shadow-[0_0_8px_rgba(110,86,207,0.6)]"
           />
           <div className="flex-1">
             <div className="font-medium text-white">With a contract code</div>
