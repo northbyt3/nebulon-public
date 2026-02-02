@@ -551,7 +551,7 @@ export default function DashboardPage() {
       const token = localStorage.getItem('authToken');
       if (!token) return;
 
-      const response = await fetch('http://localhost:3333/v1/auth/me', {
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || '/api'}/v1/auth/me`, {
         headers: {
           'Authorization': `Bearer ${token}`,
         },

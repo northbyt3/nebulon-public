@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { Twitter, Github, MessageCircle } from "lucide-react";
+import { Twitter, MessageCircle } from "lucide-react";
 
 const footerLinks = {
   Product: [
@@ -31,7 +31,6 @@ const footerLinks = {
 
 const socialLinks = [
   { icon: Twitter, href: "#", label: "Twitter" },
-  { icon: Github, href: "https://github.com/northbyt3/nebulon-public", label: "GitHub" },
   { icon: MessageCircle, href: "#", label: "Discord" },
 ];
 

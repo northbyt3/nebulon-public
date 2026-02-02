@@ -774,7 +774,7 @@ export function GeneratedPage() {
               <div className="flex gap-4">
                 {[
                   { icon: "akar-icons:twitter-fill", label: "Twitter", href: "https://x.com/northbyt3" },
-                  { icon: "akar-icons:github-fill", label: "GitHub", href: "https://github.com/northbyt3/nebulon" },
+                  // { icon: "akar-icons:github-fill", label: "GitHub", href: "https://github.com/northbyt3/nebulon" },
                 ].map((item) => (
                   <a key={item.label} href={item.href} className="text-gray-500 hover:text-white transition-colors" target="_blank" rel="noreferrer">
                     <iconify-icon icon={item.icon} width="20" />
