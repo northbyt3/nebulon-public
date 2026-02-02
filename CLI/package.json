@@ -1,12 +1,12 @@
 {
   "name": "nebulon-escrow-cli",
-  "version": "0.1.0",
+  "version": "0.8.4",
   "description": "Nebulon CLI",
   "author": "northbyt3 <northbyt3@gmail.com>",
   "license": "UNLICENSED",
   "repository": {
     "type": "git",
-    "url": "https://github.com/northbyt3/nebulon-public.git"
+    "url": "git+https://github.com/northbyt3/nebulon-public.git"
   },
   "private": false,
   "bin": {
