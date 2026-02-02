@@ -14,6 +14,7 @@ const {
   setActiveWallet,
 } = require("../wallets");
 const { banner, successMessage } = require("../ui");
+const { VERSION } = require("../version");
 
 const isPromptCancel = (error) => {
   if (!error) {
@@ -122,6 +123,7 @@ const runInit = async (options = {}, capsuleName) => {
   try {
     if (!options.noBanner) {
       banner();
+      console.log(chalk.gray(`Version: ${VERSION}`));
     }
     if (capsuleName) {
       try {

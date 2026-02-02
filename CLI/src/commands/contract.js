@@ -20,24 +20,15 @@ const {
 } = require("@solana/spl-token");
 const { SessionTokenManager } = require("@magicblock-labs/gum-sdk");
 const {
-  createDelegatePermissionInstruction,
-  permissionPdaFromAccount,
-  PERMISSION_PROGRAM_ID,
-  AUTHORITY_FLAG,
-  TX_LOGS_FLAG,
   MAGIC_PROGRAM_ID,
   MAGIC_CONTEXT_ID,
   DELEGATION_PROGRAM_ID,
   ConnectionMagicRouter,
-  getAuthToken,
-  getPermissionStatus,
-  waitUntilPermissionActive,
 } = require("@magicblock-labs/ephemeral-rollups-sdk");
 const { loadConfig, saveConfig } = require("../config");
 const { loadWalletKeypair } = require("../wallets");
 const { ensureHostedSession } = require("../session");
 const { successMessage, errorMessage } = require("../ui");
-const { checkTeeAvailability } = require("./tee");
 const {
   getContracts,
   getContract,
@@ -144,11 +135,6 @@ let cachedValidatorEndpoint = null;
 
 const normalizeEndpoint = (endpoint) => endpoint.replace(/\/$/, "");
 
-const TEE_TOKEN_TTL_SECONDS = 240;
-const teeTokenCache = new Map();
-const teeWsHealthCache = new Map();
-const teeProgramCache = new Map();
-
 const isLocalnetConfig = (config) => {
   const network = (config?.network || config?.solanaNetwork || "").toLowerCase();
   if (network === "localnet") {
@@ -164,210 +150,66 @@ const isLocalnetConfig = (config) => {
   );
 };
 
-const getTeeEndpoint = async (config, keypair, options = {}) => {
-  const base = normalizeEndpoint(
-    config.ephemeralTeeEndpoint ||
-      config.ephemeralPermissionEndpoint ||
-      "https://tee.magicblock.app"
-  );
-  const cacheKey = `${base}:${keypair.publicKey.toBase58()}`;
-  const cached = teeTokenCache.get(cacheKey);
-  const now = Math.floor(Date.now() / 1000);
-  if (!options.forceRefresh && cached && cached.expiresAt > now) {
-    return cached;
-  }
-  const auth = await getAuthToken(
-    base,
-    keypair.publicKey,
-    (message) => nacl.sign.detached(message, keypair.secretKey)
-  );
-  const endpoint = `${base}?token=${auth.token}`;
-  const expiresAt = now + TEE_TOKEN_TTL_SECONDS;
-  const record = { endpoint, token: auth.token, expiresAt };
-  teeTokenCache.set(cacheKey, record);
-  return record;
-};
-
 const getEphemeralProgram = async (config, signerKeypair, options = {}) => {
+  const endpoint = config.ephemeralProviderUrl || config.rpcUrl;
+  const wsEndpoint = config.ephemeralWsUrl || undefined;
   if (isLocalnetConfig(config)) {
-    return getProgram(config, signerKeypair, {
-      endpoint: config.ephemeralProviderUrl || config.rpcUrl,
-      wsEndpoint: config.ephemeralWsUrl || undefined,
-    });
+    return getProgram(config, signerKeypair, { endpoint, wsEndpoint });
   }
-  const cacheKey = signerKeypair.publicKey.toBase58();
-  const cached = teeProgramCache.get(cacheKey);
-  const now = Math.floor(Date.now() / 1000);
-  if (!options.forceRefresh && cached && cached.expiresAt > now + 30) {
-    return cached.bundle;
+  if (options.forceRefresh) {
+    return getProgram(config, signerKeypair, { endpoint, wsEndpoint });
   }
-  const { endpoint, token, expiresAt } = await getTeeEndpoint(
-    config,
-    signerKeypair,
-    options
-  );
-  let wsEndpoint =
-    config.ephemeralTeeWsEndpoint ||
-    endpoint.replace(/^https:/, "wss:").replace(/^http:/, "ws:");
-  if (token && !wsEndpoint.includes("token=")) {
-    wsEndpoint += wsEndpoint.includes("?") ? `&token=${token}` : `?token=${token}`;
-  }
-  if (process.env.NEBULON_TEE_DEBUG === "1") {
-    console.log("TEE signer:", signerKeypair.publicKey.toBase58());
-    console.log("TEE RPC endpoint:", endpoint);
-    console.log("TEE WS endpoint:", wsEndpoint);
-  }
-  const programBundle = getProgram(config, signerKeypair, {
-    endpoint,
-    wsEndpoint,
-  });
-  await ensureTeeWsHealthy(programBundle.provider.connection, wsEndpoint);
-  teeProgramCache.set(cacheKey, { bundle: programBundle, expiresAt });
-  return programBundle;
-};
-
-const ensureTeeWsHealthy = async (connection, wsEndpoint) => {
-  if (!connection || !wsEndpoint) {
-    return;
-  }
-  const cacheKey = wsEndpoint;
-  const now = Date.now();
-  const cached = teeWsHealthCache.get(cacheKey);
-  if (cached && cached.expiresAt > now) {
-    return;
-  }
-
-  const timeoutMs = 4000;
-  let subscriptionId = null;
-  let resolved = false;
-  try {
-    if (process.env.NEBULON_TEE_DEBUG === "1") {
-      console.log("TEE WS health check: subscribing for slot change...");
-    }
-    subscriptionId = connection.onSlotChange((info) => {
-      if (!resolved) {
-        resolved = true;
-        if (process.env.NEBULON_TEE_DEBUG === "1") {
-          console.log(`TEE WS health check: slot ${info.slot}`);
-        }
-      }
-    });
-    await new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        if (!resolved) {
-          reject(
-            new Error(
-              "TEE WS health check failed (no slot notifications). Check MagicBlock WS connectivity."
-            )
-          );
-        } else {
-          resolve();
-        }
-      }, timeoutMs);
-      const poll = () => {
-        if (resolved) {
-          clearTimeout(timeout);
-          resolve();
-          return;
-        }
-        setTimeout(poll, 50);
-      };
-      poll();
-    });
-    if (process.env.NEBULON_TEE_DEBUG === "1") {
-      console.log("TEE WS health check: OK");
-    }
-    teeWsHealthCache.set(cacheKey, { expiresAt: now + 15000 });
-  } finally {
-    if (subscriptionId !== null) {
-      try {
-        await connection.removeSlotChangeListener(subscriptionId);
-      } catch {
-        // ignore cleanup errors
-      }
-    }
-  }
-};
-
-const buildPermissionEndpoint = async (config, keypair) => {
-  const network = (config?.network || config?.solanaNetwork || "").toLowerCase();
-  const rpc = String(config?.rpcUrl || "");
-  const isLocal =
-    network === "localnet" ||
-    rpc.includes("localhost:8899") ||
-    rpc.includes("127.0.0.1:8899");
-  if (isLocal) {
-    return null;
-  }
-  const base = normalizeEndpoint(
-    config.ephemeralPermissionEndpoint || "https://tee.magicblock.app"
-  );
-  if (base.includes("localhost") || base.includes("127.0.0.1")) {
-    return null;
-  }
-  try {
-    const auth = await getAuthToken(
-      base,
-      keypair.publicKey,
-      (message) => nacl.sign.detached(message, keypair.secretKey)
-    );
-    return `${base}?token=${auth.token}`;
-  } catch (error) {
-    console.warn("Permission token fetch failed. Skipping permission checks.");
-    return base;
-  }
-};
-
-const waitForPermissionActive = async (config, keypair, pda, label) => {
-  const network = (config?.network || config?.solanaNetwork || "").toLowerCase();
-  const rpc = String(config?.rpcUrl || "");
-  if (
-    network === "localnet" ||
-    rpc.includes("localhost:8899") ||
-    rpc.includes("127.0.0.1:8899")
-  ) {
-    return;
-  }
-  const endpoint = await buildPermissionEndpoint(config, keypair);
-  if (!endpoint) {
-    return;
-  }
-  try {
-    const ready = await waitUntilPermissionActive(endpoint, pda, 20_000);
-    if (ready) {
-      return;
-    }
-    const status = await getPermissionStatus(endpoint, pda).catch(() => null);
-    const state = status?.status || "unknown";
-    throw new Error(
-      `${label} permission is not active yet (status: ${state}). Try again in a few seconds.`
-    );
-  } catch (error) {
-    console.warn(
-      `Warning: permission check failed for ${label}. Proceeding without confirmation.`
-    );
-  }
+  return getProgram(config, signerKeypair, { endpoint, wsEndpoint });
 };
 
 const getDelegationValidator = async (config) => {
   const endpoint = (config.ephemeralProviderUrl || "").toLowerCase();
+  const wsEndpoint = (config.ephemeralWsUrl || "").toLowerCase();
   if (endpoint.includes("localhost") || endpoint.includes("127.0.0.1")) {
     return LOCAL_VALIDATOR_IDENTITY;
   }
-  if (endpoint.includes("router")) {
-    if (cachedValidator && cachedValidatorEndpoint === endpoint) {
+
+  const safePublicKey = (value) => {
+    try {
+      return value ? new PublicKey(value) : null;
+    } catch {
+      return null;
+    }
+  };
+
+  const shouldUseRouter =
+    endpoint.includes("router") ||
+    wsEndpoint.includes("router") ||
+    endpoint.includes("magicblock.app") ||
+    wsEndpoint.includes("magicblock.app");
+  if (shouldUseRouter && config.ephemeralProviderUrl) {
+    const cacheKey = `${endpoint}|${wsEndpoint}`;
+    if (cachedValidator && cachedValidatorEndpoint === cacheKey) {
       return cachedValidator;
     }
-    const router = new ConnectionMagicRouter(config.ephemeralProviderUrl, {
-      wsEndpoint: config.ephemeralWsUrl || undefined,
-    });
-    const closest = await router.getClosestValidator();
-    cachedValidator = new PublicKey(closest.pubkey || closest.validator || closest);
-    cachedValidatorEndpoint = endpoint;
-    return cachedValidator;
+    try {
+      const router = new ConnectionMagicRouter(config.ephemeralProviderUrl, {
+        wsEndpoint: config.ephemeralWsUrl || undefined,
+      });
+      const closest = await router.getClosestValidator();
+      if (config && config.__verbose) {
+        console.log("Router closest:", JSON.stringify(closest));
+      }
+      const identity =
+        closest?.validatorIdentity || closest?.identity || closest?.validator;
+      const candidate = safePublicKey(identity || closest?.pubkey || closest);
+      if (candidate) {
+        cachedValidator = candidate;
+        cachedValidatorEndpoint = cacheKey;
+        return cachedValidator;
+      }
+    } catch {
+      // fall back to configured identity below
+    }
   }
-  if (config.ephemeralValidatorIdentity) {
-    return new PublicKey(config.ephemeralValidatorIdentity);
+  const fallback = safePublicKey(config.ephemeralValidatorIdentity);
+  if (fallback) {
+    return fallback;
   }
   return null;
 };
@@ -724,16 +566,10 @@ const parsePublicKey = (value, label) => {
   }
 };
 
-const ensureExecutionMode = async (config, _contract, keypair, _options = {}) => {
-  if (isLocalnetConfig(config)) {
-    return "per";
-  }
-  const check = await checkTeeAvailability(config, keypair, {
-    timeoutMs: 4000,
-  });
-  if (!check.ok) {
+const ensureExecutionMode = async (config) => {
+  if (!isLocalnetConfig(config) && !config.ephemeralProviderUrl) {
     console.warn(
-      "Warning: MagicBlock TEE is not available from this location. Continuing in PER mode."
+      "Warning: MagicBlock ER endpoint is not configured. Run `nebulon init` to fetch endpoints."
     );
   }
   return "per";
@@ -762,6 +598,15 @@ const normalizeHashBytes = (value) => {
     return Buffer.from(value);
   }
   return Buffer.from(String(value), "utf8").subarray(0, 32);
+};
+
+const logProgress = (message) => {
+  console.log(chalk.gray(message));
+};
+
+const logTx = (label, sig, isEr = false) => {
+  const prefix = isEr ? "ER-tx" : "tx";
+  console.log(`${label} (${prefix}: ${sig})`);
 };
 
 const buildMilestonesHash = (milestones) => {
@@ -1182,31 +1027,24 @@ const ensureSessionToken = async (config, provider, programId, authorityKey) => 
 };
 
 const getSessionContext = async (config, keypair, program) => {
-  if (isLocalnetConfig(config)) {
-    const { sessionSigner, sessionPda } = await ensureSessionToken(
-      config,
-      program.provider,
-      program.programId,
-      keypair.publicKey
-    );
-    return { signer: sessionSigner, sessionPda, payer: sessionSigner.publicKey };
-  }
-  return { signer: keypair, sessionPda: null, payer: keypair.publicKey };
+  const { sessionSigner, sessionPda } = await ensureSessionToken(
+    config,
+    program.provider,
+    program.programId,
+    keypair.publicKey
+  );
+  return { signer: sessionSigner, sessionPda, payer: sessionSigner.publicKey };
 };
 
 const getPerProgramBundle = async (config, keypair, programId, provider) => {
-  if (isLocalnetConfig(config)) {
-    const { sessionSigner, sessionPda } = await ensureSessionToken(
-      config,
-      provider,
-      programId,
-      keypair.publicKey
-    );
-    const { program } = getProgram(config, sessionSigner, { useEphemeral: true });
-    return { program, sessionSigner, sessionPda };
-  }
-  const { program } = await getEphemeralProgram(config, keypair);
-  return { program, sessionSigner: keypair, sessionPda: null };
+  const { sessionSigner, sessionPda } = await ensureSessionToken(
+    config,
+    provider,
+    programId,
+    keypair.publicKey
+  );
+  const { program } = await getEphemeralProgram(config, sessionSigner);
+  return { program, sessionSigner, sessionPda };
 };
 
 const isAlreadyExistsError = (error) => {
@@ -1218,85 +1056,21 @@ const isAlreadyExistsError = (error) => {
   );
 };
 
-const ensurePermission = async (
-  _config,
-  program,
-  keypair,
-  permissionedAccount,
-  members
-) => {
-  try {
-    await program.methods
-      .createPermission(members.accountType, members.entries)
-      .accountsPartial({
-        payer: keypair.publicKey,
-        permissionedAccount,
-        permission: permissionPdaFromAccount(permissionedAccount),
-        permissionProgram: PERMISSION_PROGRAM_ID,
-        systemProgram: SystemProgram.programId,
-      })
-      .signers([keypair])
-      .rpc();
-    return true;
-  } catch (error) {
-    if (isAlreadyExistsError(error)) {
-      return false;
-    }
-    throw error;
-  }
-};
-
-const ensureDelegatedPermission = async (
-  config,
-  provider,
-  keypair,
-  permissionedAccount
-) => {
-  const permissionPda = permissionPdaFromAccount(permissionedAccount);
-  const info = await provider.connection.getAccountInfo(
-    permissionPda,
-    "confirmed"
-  );
-  if (info && info.owner.equals(DELEGATION_PROGRAM_ID)) {
-    return;
-  }
-  if (info && !info.owner.equals(PERMISSION_PROGRAM_ID)) {
-    throw new Error(
-      `Permission ${permissionPda.toBase58()} is owned by ${info.owner.toBase58()}, expected ${PERMISSION_PROGRAM_ID.toBase58()}.`
-    );
-  }
-  const validator = await getDelegationValidator(config);
-  const ix = createDelegatePermissionInstruction({
-    payer: keypair.publicKey,
-    validator,
-    permissionedAccount: [permissionedAccount, false],
-    authority: [keypair.publicKey, true],
-  });
-  const permissionMeta = ix.keys.find((key) =>
-    key.pubkey.equals(permissionedAccount)
-  );
-  if (permissionMeta) {
-    permissionMeta.isWritable = true;
-  }
-  const tx = new Transaction().add(ix);
-  try {
-    await provider.sendAndConfirm(tx, [keypair]);
-  } catch (error) {
-    if (!isAlreadyExistsError(error)) {
-      throw error;
-    }
-  }
-};
+const isVerbose = (options) => Boolean(options && options.verbose);
 
 const ensureDelegatedAccount = async (
   config,
   program,
   keypair,
   accountType,
-  pda
+  pda,
+  options
 ) => {
   const info = await program.provider.connection.getAccountInfo(pda, "confirmed");
   if (info && info.owner.equals(DELEGATION_PROGRAM_ID)) {
+    if (isVerbose(options)) {
+      console.log(`Delegation already active for ${pda.toBase58()}; skipping.`);
+    }
     return;
   }
   const isPerVault = accountType && Object.prototype.hasOwnProperty.call(accountType, "perVault");
@@ -1311,6 +1085,13 @@ const ensureDelegatedAccount = async (
   }
   try {
     const validator = await getDelegationValidator(config);
+    if (validator) {
+      if (isVerbose(options)) {
+        console.log(`Delegating account to validator: ${validator.toBase58()}`);
+      }
+    } else if (isVerbose(options)) {
+      console.warn("Delegation skipped: no validator identity resolved.");
+    }
     const remainingAccounts = validator
       ? [{ pubkey: validator, isWritable: false, isSigner: false }]
       : [];
@@ -1322,7 +1103,7 @@ const ensureDelegatedAccount = async (
       })
       .remainingAccounts(remainingAccounts)
       .signers([keypair])
-      .rpc();
+      .rpc({ skipPreflight: true });
   } catch (error) {
     if (!isAlreadyExistsError(error)) {
       throw error;
@@ -1336,13 +1117,17 @@ const ensureDelegatedEscrow = async (
   keypair,
   escrowId,
   escrowPda,
-  client
+  client,
+  options
 ) => {
   const info = await program.provider.connection.getAccountInfo(
     escrowPda,
     "confirmed"
   );
   if (info && info.owner.equals(DELEGATION_PROGRAM_ID)) {
+    if (isVerbose(options)) {
+      console.log(`Delegation already active for ${escrowPda.toBase58()}; skipping.`);
+    }
     return;
   }
   if (info && !info.owner.equals(program.programId)) {
@@ -1352,6 +1137,13 @@ const ensureDelegatedEscrow = async (
   }
   try {
     const validator = await getDelegationValidator(config);
+    if (validator) {
+      if (isVerbose(options)) {
+        console.log(`Delegating escrow to validator: ${validator.toBase58()}`);
+      }
+    } else if (isVerbose(options)) {
+      console.warn("Delegation skipped: no validator identity resolved.");
+    }
     const remainingAccounts = validator
       ? [{ pubkey: validator, isWritable: false, isSigner: false }]
       : [];
@@ -1364,22 +1156,12 @@ const ensureDelegatedEscrow = async (
       })
       .remainingAccounts(remainingAccounts)
       .signers([keypair])
-      .rpc();
+      .rpc({ skipPreflight: true });
   } catch (error) {
     if (!isAlreadyExistsError(error)) {
       throw error;
     }
   }
-};
-
-const buildMembers = (contract) => {
-  const flags = AUTHORITY_FLAG | TX_LOGS_FLAG;
-  return {
-    entries: [
-      { flags, pubkey: new PublicKey(contract.client_wallet) },
-      { flags, pubkey: new PublicKey(contract.contractor_wallet) },
-    ],
-  };
 };
 
 const ensureAta = async (connection, payer, owner, mint) => {
@@ -1688,7 +1470,7 @@ const runInitContract = async (config, contract, options) => {
       })
       .signers([keypair])
       .rpc();
-    console.log(`Escrow initialized. (tx: ${sig})`);
+    logTx("Escrow initialized.", sig, false);
 
     await linkEscrow(config.backendUrl, config.auth.token, contract.id, {
       escrowPda: escrowPda.toBase58(),
@@ -1760,6 +1542,9 @@ const runAddMilestone = async (config, contract, title, options) => {
   await ensureExecutionMode(config, contract, keypair, options);
 
   console.log("Processing.");
+  logProgress("Preparing terms for ER submission");
+  await sleep(200);
+  logProgress("Encrypting milestone details");
   let privacyKey;
   try {
     privacyKey = await getContractPrivacyKey(config, contract.id, wallet);
@@ -1775,6 +1560,10 @@ const runAddMilestone = async (config, contract, title, options) => {
     index,
     title
   );
+  if (!isEncryptedPayload(encryptedDetails)) {
+    console.error("Failed to encrypt milestone details.");
+    process.exit(1);
+  }
   
   const encryptedBytes = Buffer.from(encryptedDetails, "utf8");
   
@@ -1790,6 +1579,7 @@ const runAddMilestone = async (config, contract, title, options) => {
     .update(encryptedDetails)
     .digest();
 
+  logProgress("Preparing milestone accounts");
   const privateMilestonePda = derivePrivateMilestonePda(
     escrowPda,
     index,
@@ -1806,26 +1596,13 @@ const runAddMilestone = async (config, contract, title, options) => {
     .signers([keypair])
     .rpc();
 
-  const members = buildMembers(contract);
-  members.accountType = {
-    privateMilestone: {
-      escrow: escrowPda,
-      index,
-    },
-  };
-  await ensurePermission(config, program, keypair, privateMilestonePda, members);
-  await ensureDelegatedPermission(
-    config,
-    program.provider,
-    keypair,
-    privateMilestonePda
-  );
   await ensureDelegatedAccount(
     config,
     program,
     keypair,
-    members.accountType,
-    privateMilestonePda
+    { privateMilestone: { escrow: escrowPda, index } },
+    privateMilestonePda,
+    options
   );
 
   const perVaultPda = derivePerVaultPda(escrowPda, programId);
@@ -1834,7 +1611,8 @@ const runAddMilestone = async (config, contract, title, options) => {
     program,
     keypair,
     { perVault: { escrow: escrowPda } },
-    perVaultPda
+    perVaultPda,
+    options
   );
   await ensureDelegatedEscrow(
     config,
@@ -1842,9 +1620,11 @@ const runAddMilestone = async (config, contract, title, options) => {
     keypair,
     escrowId,
     escrowPda,
-    new PublicKey(contract.client_wallet)
+    new PublicKey(contract.client_wallet),
+    options
   );
 
+  logProgress("Submitting metadata on ER");
   const { program: erProgram, sessionSigner, sessionPda } =
     await getPerProgramBundle(config, keypair, programId, program.provider);
   const metaSig = await erProgram.methods
@@ -1865,8 +1645,7 @@ const runAddMilestone = async (config, contract, title, options) => {
       })
     .signers([sessionSigner])
     .rpc({ skipPreflight: true });
-  console.log("Submitting Metadata...");
-  console.log(`Done. (tx: ${metaSig})`);
+  logTx("Metadata submitted.", metaSig, true);
 
   const milestones = Array.isArray(contract.milestones)
     ? [...contract.milestones]
@@ -1927,6 +1706,47 @@ const runDisableMilestone = async (config, contract, number, options) => {
     console.error("Milestone is disabled.");
     console.error("Current status: disabled");
     return;
+  }
+  const programBundle = getProgram(config, keypair);
+  const escrowPda = new PublicKey(contract.escrow_pda);
+  const programId = programBundle.programId;
+  const privateMilestonePda = derivePrivateMilestonePda(
+    escrowPda,
+    index,
+    programId
+  );
+  await ensureDelegatedAccount(
+    config,
+    programBundle.program,
+    keypair,
+    { privateMilestone: { escrow: escrowPda, index } },
+    privateMilestonePda,
+    options
+  );
+  const perVaultPda = derivePerVaultPda(escrowPda, programId);
+  await ensureDelegatedAccount(
+    config,
+    programBundle.program,
+    keypair,
+    { perVault: { escrow: escrowPda } },
+    perVaultPda,
+    options
+  );
+  const escrowState = await getEscrowState(
+    programBundle.connection,
+    programId,
+    escrowPda
+  );
+  if (escrowState) {
+    await ensureDelegatedEscrow(
+      config,
+      programBundle.program,
+      keypair,
+      escrowState.escrowId,
+      escrowPda,
+      new PublicKey(contract.client_wallet),
+      options
+    );
   }
   let currentStatus = null;
   try {
@@ -1994,15 +1814,18 @@ const runDisableMilestone = async (config, contract, number, options) => {
   }
 
   console.log("Processing.");
+  logProgress("Submitting milestone update on ER");
+  await sleep(200);
   const sig = await updatePrivateMilestoneStatus(
     config,
     contract,
     keypair,
     walletKey,
     index,
-    4
+    4,
+    options
   );
-  console.log(`Milestone disabled. (tx: ${sig})`);
+  logTx("Milestone disabled.", sig, true);
 
   const nextMilestones = milestones.map((milestone) =>
     milestone.index === index
@@ -2012,6 +1835,8 @@ const runDisableMilestone = async (config, contract, number, options) => {
   await updateContractIfNegotiating(config, contract, {
     milestones: nextMilestones,
   });
+  logProgress("Syncing private state to escrow flags");
+  logProgress("Syncing private state to escrow flags");
   await runSyncFlags(config, contract, { ...options, confirm: true });
   successMessage("Milestone disabled.");
 };
@@ -2021,7 +1846,8 @@ const ensureTermsPrepared = async (
   contract,
   keypair,
   escrowPda,
-  escrowId
+  escrowId,
+  options
 ) => {
   const { program, programId } = getProgram(config, keypair);
   const termsPda = deriveTermsPda(escrowPda, programId);
@@ -2036,17 +1862,13 @@ const ensureTermsPrepared = async (
     .signers([keypair])
     .rpc();
 
-  const members = buildMembers(contract);
-  members.accountType = { terms: { escrow: escrowPda } };
-  await ensurePermission(config, program, keypair, termsPda, members);
-  await ensureDelegatedPermission(config, program.provider, keypair, termsPda);
-  await waitForPermissionActive(config, keypair, termsPda, "Terms");
   await ensureDelegatedAccount(
     config,
     program,
     keypair,
-    members.accountType,
-    termsPda
+    { terms: { escrow: escrowPda } },
+    termsPda,
+    options
   );
 
   const perVaultPda = derivePerVaultPda(escrowPda, programId);
@@ -2055,7 +1877,8 @@ const ensureTermsPrepared = async (
     program,
     keypair,
     { perVault: { escrow: escrowPda } },
-    perVaultPda
+    perVaultPda,
+    options
   );
   await ensureDelegatedEscrow(
     config,
@@ -2063,7 +1886,8 @@ const ensureTermsPrepared = async (
     keypair,
     escrowId,
     escrowPda,
-    new PublicKey(contract.client_wallet)
+    new PublicKey(contract.client_wallet),
+    options
   );
 
   return { termsPda, perVaultPda, program, programId };
@@ -2077,19 +1901,26 @@ const submitTerms = async (
   escrowId,
   totalPayment,
   deadline,
-  encryptedTerms
+  encryptedTerms,
+  options
 ) => {
   const { termsPda, perVaultPda, program, programId } = await ensureTermsPrepared(
     config,
     contract,
     keypair,
     escrowPda,
-    escrowId
+    escrowId,
+    options
   );
 
   const { program: erProgram, sessionSigner, sessionPda } =
     await getPerProgramBundle(config, keypair, programId, program.provider);
   const encryptedBytes = Buffer.from(encryptedTerms || "", "utf8");
+  if (encryptedBytes.length > 256) {
+    throw new Error(
+      `Encrypted terms too large (${encryptedBytes.length} bytes). Max is 256 bytes.`
+    );
+  }
   const attemptCreate = async (forceRefresh = false) => {
     const { program } = forceRefresh
       ? await getEphemeralProgram(config, keypair, { forceRefresh: true })
@@ -2118,7 +1949,7 @@ const submitTerms = async (
   const attemptCreateDirect = async () => {
     const { program: userErProgram } = await getEphemeralProgram(
       config,
-      keypair,
+      sessionSigner,
       { forceRefresh: true }
     );
     return userErProgram.methods
@@ -2259,7 +2090,10 @@ const runAddTerm = async (config, contract, field, value, options) => {
   });
 
   if (!deadline || !totalPayment) {
-    console.log("Saved term. Set the remaining term to submit on-chain.");
+    const missingLabel = !deadline ? "deadline" : "payment";
+    console.log(
+      `Saved term. Set ${missingLabel} with \`nebulon contract <id> add term ${missingLabel} <value>\` to submit on-chain.`
+    );
     successMessage("Term saved.");
     return;
   }
@@ -2281,14 +2115,19 @@ const runAddTerm = async (config, contract, field, value, options) => {
       escrowId,
       totalPayment,
       deadline,
-      encryptedTerms
+      encryptedTerms,
+      options
     );
     if (!sig) {
       return;
     }
-    console.log(`Terms submitted. (tx: ${sig})`);
+    logTx("Terms submitted.", sig, true);
     successMessage("Terms submitted.");
   } catch (error) {
+    console.error(error?.message || error);
+    if (error?.stack) {
+      console.error(error.stack);
+    }
     await printTxLogs(error);
     throw error;
   }
@@ -2371,6 +2210,7 @@ const runSignContract = async (config, contract, options) => {
   }
 
   console.log("Processing.");
+  logProgress("Submitting signature on ER");
   let signSig = null;
   let commitSig = null;
   const { termsPda } = await ensureTermsPrepared(
@@ -2378,7 +2218,8 @@ const runSignContract = async (config, contract, options) => {
     contract,
     keypair,
     escrowPda,
-    escrowId
+    escrowId,
+    options
   );
   const { program: erProgram, sessionSigner, sessionPda } =
     await getPerProgramBundle(
@@ -2398,8 +2239,9 @@ const runSignContract = async (config, contract, options) => {
     })
     .signers([sessionSigner])
     .rpc({ skipPreflight: true });
-  console.log(`Signature submitted. (tx: ${signSig})`);
+  logTx("Signature submitted.", signSig, true);
   try {
+    logProgress("Committing terms on ER");
     commitSig = await erProgram.methods
       .commitTerms(new anchor.BN(escrowId.toString()))
       .accounts({
@@ -2415,7 +2257,7 @@ const runSignContract = async (config, contract, options) => {
     commitSig = null;
   }
   if (commitSig) {
-    console.log(`Terms committed. (tx: ${commitSig})`);
+    logTx("Terms committed.", commitSig, true);
     console.log("Syncing contract flags...");
     let synced = false;
     for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -2600,10 +2442,10 @@ const runFundContract = async (config, contract, options) => {
     })
     .signers([keypair])
     .rpc();
-  console.log(`Funding submitted. (tx: ${sig})`);
+  logTx("Funding submitted.", sig, false);
 
   await markFunded(config.backendUrl, config.auth.token, contract.id);
-  console.log("Syncing private state to escrow flags.");
+  logProgress("Syncing private state to escrow flags");
   for (let attempt = 0; attempt < 3; attempt += 1) {
     try {
       await runSyncFlags(config, contract, { ...options, confirm: true });
@@ -2742,9 +2584,10 @@ const runUpdateMilestone = async (config, contract, number, options) => {
     keypair,
     walletKey,
     index,
-    1
+    1,
+    options
   );
-  console.log(`Milestone updated. (tx: ${sig})`);
+  logTx("Milestone updated.", sig, true);
 
   const milestones = Array.isArray(contract.milestones)
     ? contract.milestones.map((milestone) =>
@@ -2759,6 +2602,7 @@ const runUpdateMilestone = async (config, contract, number, options) => {
       "Warning: backend did not persist milestone status (check backend version)."
     );
   }
+  logProgress("Syncing private state to escrow flags");
   await runSyncFlags(config, contract, { ...options, confirm: true });
   successMessage("Milestone updated.");
 };
@@ -2835,15 +2679,57 @@ const runConfirmMilestone = async (config, contract, number, options) => {
   }
 
   console.log("Processing.");
+  const programBundle = getProgram(config, keypair);
+  const escrowPda = new PublicKey(contract.escrow_pda);
+  const programId = programBundle.programId;
+  const privateMilestonePda = derivePrivateMilestonePda(
+    escrowPda,
+    index,
+    programId
+  );
+  await ensureDelegatedAccount(
+    config,
+    programBundle.program,
+    keypair,
+    { privateMilestone: { escrow: escrowPda, index } },
+    privateMilestonePda,
+    options
+  );
+  const perVaultPda = derivePerVaultPda(escrowPda, programId);
+  await ensureDelegatedAccount(
+    config,
+    programBundle.program,
+    keypair,
+    { perVault: { escrow: escrowPda } },
+    perVaultPda,
+    options
+  );
+  const escrowState = await getEscrowState(
+    programBundle.connection,
+    programId,
+    escrowPda
+  );
+  if (escrowState) {
+    await ensureDelegatedEscrow(
+      config,
+      programBundle.program,
+      keypair,
+      escrowState.escrowId,
+      escrowPda,
+      new PublicKey(contract.client_wallet),
+      options
+    );
+  }
   const sig = await updatePrivateMilestoneStatus(
     config,
     contract,
     keypair,
     walletKey,
     index,
-    3
+    3,
+    options
   );
-  console.log(`Milestone confirmed. (tx: ${sig})`);
+  logTx("Milestone confirmed.", sig, true);
 
   const milestones = Array.isArray(contract.milestones)
     ? contract.milestones.map((milestone) =>
@@ -2940,7 +2826,7 @@ const runClaimFunds = async (config, contract, options) => {
           })
           .signers([keypair])
           .rpc();
-        console.log(`Funds claimed. (tx: ${sig})`);
+        logTx("Funds claimed.", sig, false);
         successMessage(
           `Funds claimed successfully. (+${formatUsdc(rawFunded)} USDC)`
         );
@@ -2970,7 +2856,7 @@ const runClaimFunds = async (config, contract, options) => {
           })
           .signers([keypair])
           .rpc();
-        console.log(`Timeout funds claimed. (tx: ${sig})`);
+        logTx("Timeout funds claimed.", sig, false);
         successMessage(
           `Funds claimed successfully. (+${formatUsdc(rawFunded)} USDC)`
         );
@@ -3029,7 +2915,7 @@ const runClaimFunds = async (config, contract, options) => {
         })
         .signers([keypair])
         .rpc();
-      console.log(`Refund claimed. (tx: ${sig})`);
+      logTx("Refund claimed.", sig, false);
       successMessage("Refund claimed.");
       successMessage("Escrow rent returned to the creator.");
       try {
@@ -3074,7 +2960,8 @@ const updatePrivateMilestoneStatus = async (
   keypair,
   walletKey,
   index,
-  status
+  status,
+  options
 ) => {
   const { program, connection, programId } = getProgram(config, keypair);
   const escrowPda = new PublicKey(contract.escrow_pda);
@@ -3091,26 +2978,13 @@ const updatePrivateMilestoneStatus = async (
     programId
   );
 
-  const members = buildMembers(contract);
-  members.accountType = {
-    privateMilestone: {
-      escrow: escrowPda,
-      index,
-    },
-  };
-  await ensurePermission(config, program, keypair, privateMilestonePda, members);
-  await ensureDelegatedPermission(
-    config,
-    program.provider,
-    keypair,
-    privateMilestonePda
-  );
   await ensureDelegatedAccount(
     config,
     program,
     keypair,
-    members.accountType,
-    privateMilestonePda
+    { privateMilestone: { escrow: escrowPda, index } },
+    privateMilestonePda,
+    options
   );
   await ensureDelegatedEscrow(
     config,
@@ -3118,12 +2992,15 @@ const updatePrivateMilestoneStatus = async (
     keypair,
     escrowId,
     escrowPda,
-    new PublicKey(contract.client_wallet)
+    new PublicKey(contract.client_wallet),
+    options
   );
 
   const { program: erProgram, sessionSigner, sessionPda } =
     await getPerProgramBundle(config, keypair, programId, program.provider);
 
+  logProgress("Submitting milestone update on ER");
+  await sleep(200);
   const sig = await erProgram.methods
     .updatePrivateMilestoneStatus(
       new anchor.BN(escrowId.toString()),
@@ -3164,7 +3041,8 @@ const runSyncFlags = async (config, contract, options) => {
     contract,
     keypair,
     escrowPda,
-    escrowId
+    escrowId,
+    options
   );
 
   const milestoneIndices = Array.isArray(contract.milestones)
@@ -3177,26 +3055,13 @@ const runSyncFlags = async (config, contract, options) => {
       index,
       programId
     );
-    const members = buildMembers(contract);
-    members.accountType = {
-      privateMilestone: {
-        escrow: escrowPda,
-        index,
-      },
-    };
-    await ensurePermission(config, baseProgram, keypair, privateMilestonePda, members);
-    await ensureDelegatedPermission(
-      config,
-      baseProgram.provider,
-      keypair,
-      privateMilestonePda
-    );
     await ensureDelegatedAccount(
       config,
       baseProgram,
       keypair,
-      members.accountType,
-      privateMilestonePda
+      { privateMilestone: { escrow: escrowPda, index } },
+      privateMilestonePda,
+      options
     );
   }
 
@@ -3206,7 +3071,8 @@ const runSyncFlags = async (config, contract, options) => {
     keypair,
     escrowId,
     escrowPda,
-    new PublicKey(contract.client_wallet)
+    new PublicKey(contract.client_wallet),
+    options
   );
 
   const { program: erProgram, sessionSigner, sessionPda } =
@@ -3296,7 +3162,7 @@ const runSyncFlags = async (config, contract, options) => {
         })
         .signers([sessionSigner])
         .rpc({ skipPreflight: true });
-      console.log(`Milestones committed. (tx: ${sig})`);
+    logTx("Milestones committed.", sig, false);
       didUpdate = true;
     }
   }
@@ -3313,7 +3179,7 @@ const runSyncFlags = async (config, contract, options) => {
       })
       .signers([sessionSigner])
       .rpc({ skipPreflight: true });
-    console.log(`Funding verified. (tx: ${sig})`);
+    logTx("Funding verified.", sig, false);
     didUpdate = true;
   }
 
@@ -3333,7 +3199,7 @@ const runSyncFlags = async (config, contract, options) => {
       .remainingAccounts(milestoneAccounts)
       .signers([sessionSigner])
       .rpc({ skipPreflight: true });
-    console.log(`Ready to claim set. (tx: ${sig})`);
+    logTx("Ready to claim set.", sig, false);
     didUpdate = true;
     readyToClaimSet = true;
   }
@@ -3360,7 +3226,7 @@ const runSyncFlags = async (config, contract, options) => {
       .remainingAccounts(milestoneAccounts)
       .signers([sessionSigner])
       .rpc({ skipPreflight: true });
-    console.log(`Timeout refund ready set. (tx: ${sig})`);
+    logTx("Timeout refund ready set.", sig, false);
     didUpdate = true;
   }
 
@@ -3386,7 +3252,7 @@ const runSyncFlags = async (config, contract, options) => {
       .remainingAccounts(milestoneAccounts)
       .signers([sessionSigner])
       .rpc({ skipPreflight: true });
-    console.log(`Timeout funds ready set. (tx: ${sig})`);
+    logTx("Timeout funds ready set.", sig, false);
     didUpdate = true;
   }
 
@@ -3402,7 +3268,7 @@ const runSyncFlags = async (config, contract, options) => {
       })
       .signers([sessionSigner])
       .rpc({ skipPreflight: true });
-    console.log(`Escrow committed. (tx: ${sig})`);
+    logTx("Escrow committed.", sig, false);
   } else {
     console.log("No escrow flag changes needed.");
   }
@@ -3844,7 +3710,7 @@ const runOpenDispute = async (config, contract, options) => {
       })
       .signers([keypair])
       .rpc();
-    console.log(`Dispute opened. (tx: ${sig})`);
+    logTx("Dispute opened.", sig, false);
     console.log("Contact @nortbyt3 on Discord to discuss your case.");
     successMessage("Dispute opened.");
   } catch (error) {
@@ -3937,7 +3803,7 @@ const runResolveDispute = async (
       })
       .signers([keypair])
       .rpc();
-    console.log(`Dispute resolved. (tx: ${sig})`);
+    logTx("Dispute resolved.", sig, false);
     successMessage("Dispute resolved.");
   } catch (error) {
     const message = (error && error.message ? error.message : "").toLowerCase();
@@ -3955,6 +3821,7 @@ const runResolveDispute = async (
 
 const runContractCommand = async (args, options = {}) => {
   const config = loadConfig();
+  config.__verbose = Boolean(options && options.verbose);
   await ensureHosted(config);
 
   if (!args.length) {

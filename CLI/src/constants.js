@@ -59,6 +59,7 @@ const DEFAULT_CONFIG = {
     role: null,
     lastAuthAt: null,
   },
+  skipPermissionChecks: false,
 };
 
 module.exports = {

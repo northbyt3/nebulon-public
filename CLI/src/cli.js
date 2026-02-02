@@ -12,8 +12,7 @@ const { runHostedMe, runHostedFaucet } = require("./commands/hosted");
 const { runWalletShow, runWalletBalance, runWalletExport } = require("./commands/wallet");
 const { runTestTee } = require("./commands/tee");
 const { errorMessage } = require("./ui");
-
-const VERSION = "0.1.0";
+const { VERSION } = require("./version");
 const program = new Command();
 let hasFatalError = false;
 
@@ -184,6 +183,7 @@ program
   .argument("[rest...]", "contract sub-commands")
   .option("--confirm", "skip confirmation prompts")
   .option("--full-fields", "show full list fields without truncation")
+  .option("--verbose", "show verbose diagnostics")
   .action(async (target, rest, options) => {
     const args = [];
     if (target) {
